@@ -18,6 +18,11 @@ jobs:
 
       - name: Install dependencies
         run: |
+          # Install LLVM 17 — clang-14 (Ubuntu 22.04 default) rejects
+          # -ftrivial-auto-var-init=zero used by techpack/camera and drivers/bluetooth
+          wget -qO - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm-17.list
           sudo apt-get update -y
           sudo apt-get install -y \
             git ccache automake flex lzop bison gperf build-essential zip curl \
@@ -26,7 +31,11 @@ jobs:
             maven libssl-dev pwgen libswitch-perl policycoreutils minicom \
             libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 libx11-dev \
             lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3 \
-            clang lld llvm gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+            clang-17 lld-17 llvm-17 gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+          # Prepend clang-17 tools so bare names (clang, ld.lld, llvm-ar …) resolve
+          # to version 17 for all subsequent steps
+          echo "/usr/lib/llvm-17/bin" >> "$GITHUB_PATH"
+          clang-17 --version
 
       - name: Setup SUSFS patches
         run: |
@@ -66,13 +75,13 @@ jobs:
 
       - name: Apply SUSFS kernel patches
         run: |
-          patch -p1 --reject-file=/tmp/susfs.rej \
-            < ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch \
-            || echo "Some hunks rejected (already applied in repo) - continuing"
+          # fs/namespace.c and other kernel files are already patched in the repo;
+          # re-applying the .patch would produce duplicate function definitions.
+          # Only copy the SUSFS source files that come from the upstream susfs4ksu repo.
           cp ../susfs4ksu/kernel_patches/fs/susfs.c fs/susfs.c
           cp ../susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/susfs.h
           cp ../susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/susfs_def.h
-          echo "SUSFS files installed"
+          echo "SUSFS source files updated from upstream"
 
       - name: Build kernel
         run: |
