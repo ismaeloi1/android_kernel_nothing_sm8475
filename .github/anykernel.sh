@@ -10,7 +10,7 @@ do.systemless=1
 do.cleanup=1
 do.cleanuponabort=0
 device.name1=pong
-device.name2=
+device.name2=Pong
 supported.versions=12
 supported.patchlevels=
 '; }
