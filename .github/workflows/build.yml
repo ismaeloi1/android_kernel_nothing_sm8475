@@ -69,6 +69,23 @@ jobs:
           echo "Kconfig after fix:"
           grep -A2 "config KSU" kernel/Kconfig | head -6
 
+          # Critical fix 3: SELinux API compatibility for this QC 5.10 kernel.
+          #
+          # This kernel backports the 6.4+ SELinux AVC API:
+          #   avc_ss_reset(u32 seqno)                    — no selinux_avc* arg
+          #   selinux_status_update_policyload(u32 seqno) — no selinux_state* arg
+          #   selinux_state has no .avc member
+          # KernelSU v3 guards the new API with ">= 6.4"; force both guards to 1.
+          sed -i 's/#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))/#if 1 \/\* QC 5.10 backports 6.4+ SELinux AVC API *\//g' \
+            kernel/selinux/rules.c
+
+          # This kernel also backports the 6.10+ hashtab_duplicate const-callback API.
+          # KernelSU guards CONST_IF_6_10 with ">= 6.10"; force that guard to 1.
+          sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)/#if 1 \/\* QC 5.10 backports 6.10+ hashtab const API *\//g' \
+            kernel/selinux/sepolicy.c
+
+          echo "SELinux compat fixes applied"
+
           cd "$GITHUB_WORKSPACE"
           ln -sfn ../../KernelSU/kernel drivers/kernelsu
           echo "Symlink OK: $(readlink drivers/kernelsu)"
