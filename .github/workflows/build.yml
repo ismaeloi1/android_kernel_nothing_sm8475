@@ -32,30 +32,30 @@ jobs:
         run: |
           git clone --depth=1 --branch gki-android12-5.10 \
             https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu
-          echo "SUSFS cloned at ../susfs4ksu"
+          echo "SUSFS cloned"
 
       - name: Setup KernelSU (clone + SUSFS patch + symlink)
         run: |
           KSU_TAG=$(git ls-remote --tags https://github.com/tiann/KernelSU \
             | grep -v '\^{}' | awk '{print $2}' | sed 's|refs/tags/||' \
             | grep '^v' | sort -V | tail -1)
-          echo "Using KernelSU tag: $KSU_TAG"
+          echo "KernelSU tag: $KSU_TAG"
           git clone --depth=1 --branch "$KSU_TAG" https://github.com/tiann/KernelSU ../KernelSU
           cd ../KernelSU
-          patch -p1 < $GITHUB_WORKSPACE/../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
-          cd $GITHUB_WORKSPACE
+          patch -p1 < "$GITHUB_WORKSPACE/../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+          cd "$GITHUB_WORKSPACE"
           ln -sfn ../../KernelSU/kernel drivers/kernelsu
-          echo "KernelSU symlink: $(readlink drivers/kernelsu) -> $(ls drivers/kernelsu/Kconfig)"
+          echo "Symlink OK: $(readlink drivers/kernelsu)"
 
       - name: Apply SUSFS kernel patches
         run: |
           patch -p1 --reject-file=/tmp/susfs.rej \
-            < ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch || \
-            echo "Note: some hunks rejected (version delta) - already applied in repo"
+            < ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch \
+            || echo "Some hunks rejected (already applied in repo) - continuing"
           cp ../susfs4ksu/kernel_patches/fs/susfs.c fs/susfs.c
           cp ../susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/susfs.h
           cp ../susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/susfs_def.h
-          echo "SUSFS source files installed"
+          echo "SUSFS files installed"
 
       - name: Build kernel
         run: |
@@ -70,57 +70,16 @@ jobs:
             KBUILD_BUILD_USER=lhuna \
             KBUILD_BUILD_HOST=lhuna \
             KBUILD_BUILD_TIMESTAMP="Thu Jan  1 00:00:00 UTC 2026" \
-            -j$(nproc) 2>&1 | tee build.log || {
-            echo "===== BUILD FAILED: last 150 lines ====="
-            tail -150 build.log
-            exit 1
-          }
+            -j$(nproc) 2>&1 | tee build.log \
+            || { echo "===== BUILD FAILED ====="; tail -150 build.log; exit 1; }
 
       - name: Package with AnyKernel3
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
           cp out/arch/arm64/boot/Image AnyKernel3/
           [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/ || true
-
+          cp .github/anykernel.sh AnyKernel3/anykernel.sh
           DATE=$(date +%Y%m%d)
-          DO_DTBO=0
-          [ -f AnyKernel3/dtbo.img ] && DO_DTBO=1
-
-          cat > AnyKernel3/anykernel.sh << ANYEOF
-# AnyKernel3 - Script for lhuna kernel
-# osm0sis @ xda-developers
-
-## AnyKernel setup
-properties() { '
-kernel.string=lhuna
-do.devicecheck=1
-do.modules=0
-do.systemless=1
-do.cleanup=1
-do.cleanuponabort=0
-device.name1=pong
-device.name2=
-supported.versions=12
-supported.patchlevels=
-'; }
-
-# shell variables
-block=/dev/block/bootdevice/by-name/boot;
-is_slot_device=1;
-ramdisk_compression=auto;
-patch_vbmeta_flag=auto;
-
-. tools/ak3-core.sh;
-
-## AnyKernel install
-split_boot;
-flash_boot;
-if [ "$DO_DTBO" = "1" ]; then
-  flash_dtbo;
-fi
-## end install
-ANYEOF
-
           cd AnyKernel3
           zip -r9 "../lhuna-kernel-pong-${DATE}.zip" . -x ".git/*" "README.md" "*placeholder"
           cd ..
