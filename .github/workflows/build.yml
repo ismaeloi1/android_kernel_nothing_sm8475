@@ -26,7 +26,7 @@ jobs:
             maven libssl-dev pwgen libswitch-perl policycoreutils minicom \
             libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 libx11-dev \
             lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3 \
-            clang lld llvm gcc-aarch64-linux-gnu
+            clang lld llvm gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
       - name: Setup SUSFS patches
         run: |
@@ -76,9 +76,11 @@ jobs:
 
       - name: Build kernel
         run: |
+          mkdir -p out
+          cp defconfig out/.config
           make O=out ARCH=arm64 CC=clang \
             CROSS_COMPILE=aarch64-linux-gnu- \
-            defconfig
+            olddefconfig
 
           make O=out ARCH=arm64 CC=clang \
             CROSS_COMPILE=aarch64-linux-gnu- \
@@ -88,7 +90,14 @@ jobs:
             KBUILD_BUILD_HOST=lhuna \
             KBUILD_BUILD_TIMESTAMP="Thu Jan  1 00:00:00 UTC 2026" \
             -j$(nproc) 2>&1 | tee build.log \
-            || { echo "===== BUILD FAILED ====="; tail -150 build.log; exit 1; }
+            || {
+              echo "===== BUILD FAILED ====="
+              echo "--- Error lines ---"
+              grep -E " error:|undefined reference to|: error" build.log | tail -100
+              echo "--- Last 80 lines ---"
+              tail -80 build.log
+              exit 1
+            }
 
       - name: Package with AnyKernel3
         run: |
