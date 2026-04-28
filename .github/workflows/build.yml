@@ -82,6 +82,8 @@ jobs:
 
       - name: Build kernel
         run: |
+          export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          which clang && clang --version || { echo "ERROR: clang missing from PATH=$PATH"; exit 1; }
           mkdir -p out
           cp defconfig out/.config
           make O=out ARCH=arm64 \
@@ -211,6 +213,8 @@ jobs:
 
       - name: Build kernel
         run: |
+          export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          which clang && clang --version || { echo "ERROR: clang missing from PATH=$PATH"; exit 1; }
           mkdir -p out
           cp defconfig out/.config
           make O=out ARCH=arm64 \
@@ -355,6 +359,8 @@ jobs:
 
       - name: Build kernel
         run: |
+          export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          which clang && clang --version || { echo "ERROR: clang missing from PATH=$PATH"; exit 1; }
           mkdir -p out
           cp defconfig out/.config
           make O=out ARCH=arm64 \
@@ -500,6 +506,8 @@ jobs:
 
       - name: Build kernel
         run: |
+          export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          which clang && clang --version || { echo "ERROR: clang missing from PATH=$PATH"; exit 1; }
           mkdir -p out
           cp defconfig out/.config
           make O=out ARCH=arm64 \
