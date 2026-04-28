@@ -6,14 +6,8 @@ on:
       - claude/kernelsu-symlink-setup-bV2Rs
   workflow_dispatch:
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Shared environment variables
-# ─────────────────────────────────────────────────────────────────────────────
 env:
   KSU_TAG: "v3.2.4"
-  ARCH: arm64
-  CROSS_COMPILE: aarch64-linux-gnu-
-  CLANG_TRIPLE: aarch64-linux-gnu-
 
 jobs:
 # ─────────────────────────────────────────────────────────────────────────────
@@ -27,16 +21,28 @@ jobs:
       options: --privileged
 
     steps:
-      - name: Init pacman keyring & install deps
+      - name: Init pacman & install deps
         run: |
           pacman-key --init
           pacman-key --populate archlinux
           pacman -Syu --noconfirm
           pacman -S --noconfirm --needed \
             git clang lld llvm \
-            bc dtc libelf flex bison openssl \
-            zip wget curl python perl lzop lz4 \
-            pahole
+            bc dtc elfutils flex bison openssl \
+            zip wget curl python perl lzop lz4 pahole
+          # Verify toolchain
+          clang --version && ld.lld --version && llvm-ar --version | head -1
+          # LLVM wrappers for aarch64-linux-gnu- prefix used by kernel scripts
+          for t in gcc g++ ld strip ar nm objcopy objdump readelf; do
+            ln -sf /usr/bin/clang      /usr/local/bin/aarch64-linux-gnu-$t 2>/dev/null || true
+          done
+          ln -sf /usr/bin/ld.lld       /usr/local/bin/aarch64-linux-gnu-ld
+          ln -sf /usr/bin/llvm-ar      /usr/local/bin/aarch64-linux-gnu-ar
+          ln -sf /usr/bin/llvm-nm      /usr/local/bin/aarch64-linux-gnu-nm
+          ln -sf /usr/bin/llvm-strip   /usr/local/bin/aarch64-linux-gnu-strip
+          ln -sf /usr/bin/llvm-objcopy /usr/local/bin/aarch64-linux-gnu-objcopy
+          ln -sf /usr/bin/llvm-objdump /usr/local/bin/aarch64-linux-gnu-objdump
+          ln -sf /usr/bin/llvm-readelf /usr/local/bin/aarch64-linux-gnu-readelf
 
       - name: Checkout kernel source
         uses: actions/checkout@v4
@@ -63,7 +69,6 @@ jobs:
           # SELinux API compat: QC 5.10 backports 6.4+ AVC API
           sed -i 's/#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))/#if 1 \/* QC 5.10 backports 6.4+ SELinux AVC API *\//g' \
             kernel/selinux/rules.c
-
           # SELinux compat: QC 5.10 backports 6.10+ hashtab const-callback API
           sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)/#if 1 \/* QC 5.10 backports 6.10+ hashtab const API *\//g' \
             kernel/selinux/sepolicy.c
@@ -90,11 +95,11 @@ jobs:
             olddefconfig
 
           make O=out ARCH=arm64 \
-            CC="clang -march=armv8.2-a" \
-            LD=ld.lld \
+            CC=clang LD=ld.lld \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             LLVM=1 LLVM_IAS=1 \
+            KCFLAGS="-march=armv8.2-a" \
             KBUILD_BUILD_USER=lhuna \
             KBUILD_BUILD_HOST=lhuna \
             KBUILD_BUILD_TIMESTAMP="Thu Jan  1 00:00:00 UTC 2026" \
@@ -102,6 +107,7 @@ jobs:
             || {
               echo "===== BUILD FAILED ====="
               grep -E " error:|undefined reference to|: error" build.log | tail -100
+              echo "--- Last 80 lines ---"
               tail -80 build.log
               exit 1
             }
@@ -145,18 +151,28 @@ jobs:
       options: --privileged
 
     steps:
-      - name: Init pacman keyring & install deps
+      - name: Init pacman & install deps
         run: |
           pacman-key --init
           pacman-key --populate archlinux
           pacman -Syu --noconfirm
           pacman -S --noconfirm --needed \
             git clang lld llvm \
-            bc dtc libelf flex bison openssl \
-            zip wget curl python perl lzop lz4 \
-            pahole
+            bc dtc elfutils flex bison openssl \
+            zip wget curl python perl lzop lz4 pahole
+          clang --version && ld.lld --version && llvm-ar --version | head -1
+          for t in gcc g++ ld strip ar nm objcopy objdump readelf; do
+            ln -sf /usr/bin/clang      /usr/local/bin/aarch64-linux-gnu-$t 2>/dev/null || true
+          done
+          ln -sf /usr/bin/ld.lld       /usr/local/bin/aarch64-linux-gnu-ld
+          ln -sf /usr/bin/llvm-ar      /usr/local/bin/aarch64-linux-gnu-ar
+          ln -sf /usr/bin/llvm-nm      /usr/local/bin/aarch64-linux-gnu-nm
+          ln -sf /usr/bin/llvm-strip   /usr/local/bin/aarch64-linux-gnu-strip
+          ln -sf /usr/bin/llvm-objcopy /usr/local/bin/aarch64-linux-gnu-objcopy
+          ln -sf /usr/bin/llvm-objdump /usr/local/bin/aarch64-linux-gnu-objdump
+          ln -sf /usr/bin/llvm-readelf /usr/local/bin/aarch64-linux-gnu-readelf
 
-      - name: Checkout kernel source + KernelSU submodule
+      - name: Checkout kernel source + init KernelSU submodule
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
@@ -183,11 +199,8 @@ jobs:
 
           sed -i 's/^\s*depends on KPROBES && EXT4_FS//' kernel/Kconfig
 
-          # SELinux API compat: QC 5.10 backports 6.4+ AVC API
           sed -i 's/#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))/#if 1 \/* QC 5.10 backports 6.4+ SELinux AVC API *\//g' \
             kernel/selinux/rules.c
-
-          # SELinux compat: QC 5.10 backports 6.10+ hashtab const-callback API
           sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)/#if 1 \/* QC 5.10 backports 6.10+ hashtab const API *\//g' \
             kernel/selinux/sepolicy.c
 
@@ -213,11 +226,11 @@ jobs:
             olddefconfig
 
           make O=out ARCH=arm64 \
-            CC="clang -march=armv8.2-a" \
-            LD=ld.lld \
+            CC=clang LD=ld.lld \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             LLVM=1 LLVM_IAS=1 \
+            KCFLAGS="-march=armv8.2-a" \
             KBUILD_BUILD_USER=lhuna \
             KBUILD_BUILD_HOST=lhuna \
             KBUILD_BUILD_TIMESTAMP="Thu Jan  1 00:00:00 UTC 2026" \
@@ -225,6 +238,7 @@ jobs:
             || {
               echo "===== BUILD FAILED ====="
               grep -E " error:|undefined reference to|: error" build.log | tail -100
+              echo "--- Last 80 lines ---"
               tail -80 build.log
               exit 1
             }
@@ -258,63 +272,55 @@ jobs:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3 · stable · llvm-git (AUR dev, cached weekly)
+# 3 · stable · llvm-git via Chaotic-AUR (pre-built, dev, no makepkg needed)
 # ─────────────────────────────────────────────────────────────────────────────
   build-stable-aur:
-    name: "stable · llvm-git AUR"
+    name: "stable · llvm-git (Chaotic-AUR)"
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel
       options: --privileged
 
     steps:
-      - name: Init pacman keyring & install base deps
+      - name: Init pacman, add Chaotic-AUR, install llvm-git
         run: |
           pacman-key --init
           pacman-key --populate archlinux
           pacman -Syu --noconfirm
+
+          # Install non-LLVM build deps first
           pacman -S --noconfirm --needed \
-            git sudo cmake ninja python \
-            bc dtc libelf flex bison openssl \
-            zip wget curl perl lzop lz4 \
-            pahole
+            git bc dtc elfutils flex bison openssl \
+            zip wget curl python perl lzop lz4 pahole
 
-      - name: Get current week for cache key
-        id: date
-        run: echo "week=$(date +%Y-W%V)" >> "$GITHUB_OUTPUT"
+          # Add Chaotic-AUR (pre-built AUR binaries, updated hourly)
+          pacman-key --recv-key 3056513887B78AEB \
+            --keyserver keyserver.ubuntu.com
+          pacman-key --lsign-key 3056513887B78AEB
+          pacman -U --noconfirm \
+            'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst' \
+            'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst'
+          printf '\n[chaotic-aur]\nInclude = /etc/pacman.d/chaotic-mirrorlist\n' \
+            >> /etc/pacman.conf
+          pacman -Sy --noconfirm
 
-      - name: Restore llvm-git package cache
-        id: cache-llvm
-        uses: actions/cache@v4
-        with:
-          path: /tmp/llvm-git-pkg
-          key: arch-llvm-git-${{ steps.date.outputs.week }}
-          restore-keys: arch-llvm-git-
+          # Install llvm-git stack from Chaotic-AUR (no makepkg, no compilation)
+          pacman -S --noconfirm --needed \
+            llvm-git llvm-libs-git clang-git lld-git
 
-      - name: Build llvm-git from AUR (if no cache)
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
-        run: |
-          # makepkg refuses to run as root — create a builder user
-          useradd -m builder
-          echo "builder ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
-          mkdir -p /tmp/llvm-git-pkg
+          clang --version && ld.lld --version && llvm-ar --version | head -1
 
-          su builder -c "
-            git clone https://aur.archlinux.org/llvm-git.git /tmp/llvm-git-src
-            cd /tmp/llvm-git-src
-            # Restrict build targets to what we need (much faster)
-            sed -i 's/-DLLVM_TARGETS_TO_BUILD=.*/\"-DLLVM_TARGETS_TO_BUILD=AArch64;X86\" \\\\/' PKGBUILD || true
-            MAKEFLAGS='-j$(nproc)' makepkg -s --noconfirm --skippgpcheck
-            cp *.pkg.tar.zst /tmp/llvm-git-pkg/
-          "
-
-      - name: Install llvm-git
-        run: |
-          pacman -U --noconfirm /tmp/llvm-git-pkg/llvm-git*.pkg.tar.zst \
-            /tmp/llvm-git-pkg/clang-git*.pkg.tar.zst \
-            /tmp/llvm-git-pkg/lld-git*.pkg.tar.zst 2>/dev/null \
-            || pacman -U --noconfirm /tmp/llvm-git-pkg/*.pkg.tar.zst
-          clang --version
+          # LLVM wrappers for aarch64-linux-gnu- prefix
+          for t in gcc g++ strip ar nm objcopy objdump readelf; do
+            ln -sf /usr/bin/clang      /usr/local/bin/aarch64-linux-gnu-$t 2>/dev/null || true
+          done
+          ln -sf /usr/bin/ld.lld       /usr/local/bin/aarch64-linux-gnu-ld
+          ln -sf /usr/bin/llvm-ar      /usr/local/bin/aarch64-linux-gnu-ar
+          ln -sf /usr/bin/llvm-nm      /usr/local/bin/aarch64-linux-gnu-nm
+          ln -sf /usr/bin/llvm-strip   /usr/local/bin/aarch64-linux-gnu-strip
+          ln -sf /usr/bin/llvm-objcopy /usr/local/bin/aarch64-linux-gnu-objcopy
+          ln -sf /usr/bin/llvm-objdump /usr/local/bin/aarch64-linux-gnu-objdump
+          ln -sf /usr/bin/llvm-readelf /usr/local/bin/aarch64-linux-gnu-readelf
 
       - name: Checkout kernel source
         uses: actions/checkout@v4
@@ -340,7 +346,6 @@ jobs:
 
           sed -i 's/#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))/#if 1 \/* QC 5.10 backports 6.4+ SELinux AVC API *\//g' \
             kernel/selinux/rules.c
-
           sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)/#if 1 \/* QC 5.10 backports 6.10+ hashtab const API *\//g' \
             kernel/selinux/sepolicy.c
 
@@ -366,11 +371,11 @@ jobs:
             olddefconfig
 
           make O=out ARCH=arm64 \
-            CC="clang -march=armv8.2-a" \
-            LD=ld.lld \
+            CC=clang LD=ld.lld \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             LLVM=1 LLVM_IAS=1 \
+            KCFLAGS="-march=armv8.2-a" \
             KBUILD_BUILD_USER=lhuna \
             KBUILD_BUILD_HOST=lhuna \
             KBUILD_BUILD_TIMESTAMP="Thu Jan  1 00:00:00 UTC 2026" \
@@ -378,6 +383,7 @@ jobs:
             || {
               echo "===== BUILD FAILED ====="
               grep -E " error:|undefined reference to|: error" build.log | tail -100
+              echo "--- Last 80 lines ---"
               tail -80 build.log
               exit 1
             }
@@ -411,63 +417,53 @@ jobs:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4 · submodule · llvm-git (AUR dev, cached weekly)
+# 4 · submodule · llvm-git via Chaotic-AUR
 # ─────────────────────────────────────────────────────────────────────────────
   build-submodule-aur:
-    name: "submodule · llvm-git AUR"
+    name: "submodule · llvm-git (Chaotic-AUR)"
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel
       options: --privileged
 
     steps:
-      - name: Init pacman keyring & install base deps
+      - name: Init pacman, add Chaotic-AUR, install llvm-git
         run: |
           pacman-key --init
           pacman-key --populate archlinux
           pacman -Syu --noconfirm
+
           pacman -S --noconfirm --needed \
-            git sudo cmake ninja python \
-            bc dtc libelf flex bison openssl \
-            zip wget curl perl lzop lz4 \
-            pahole
+            git bc dtc elfutils flex bison openssl \
+            zip wget curl python perl lzop lz4 pahole
 
-      - name: Get current week for cache key
-        id: date
-        run: echo "week=$(date +%Y-W%V)" >> "$GITHUB_OUTPUT"
+          pacman-key --recv-key 3056513887B78AEB \
+            --keyserver keyserver.ubuntu.com
+          pacman-key --lsign-key 3056513887B78AEB
+          pacman -U --noconfirm \
+            'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst' \
+            'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst'
+          printf '\n[chaotic-aur]\nInclude = /etc/pacman.d/chaotic-mirrorlist\n' \
+            >> /etc/pacman.conf
+          pacman -Sy --noconfirm
 
-      - name: Restore llvm-git package cache
-        id: cache-llvm
-        uses: actions/cache@v4
-        with:
-          path: /tmp/llvm-git-pkg
-          key: arch-llvm-git-${{ steps.date.outputs.week }}
-          restore-keys: arch-llvm-git-
+          pacman -S --noconfirm --needed \
+            llvm-git llvm-libs-git clang-git lld-git
 
-      - name: Build llvm-git from AUR (if no cache)
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
-        run: |
-          useradd -m builder
-          echo "builder ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
-          mkdir -p /tmp/llvm-git-pkg
+          clang --version && ld.lld --version && llvm-ar --version | head -1
 
-          su builder -c "
-            git clone https://aur.archlinux.org/llvm-git.git /tmp/llvm-git-src
-            cd /tmp/llvm-git-src
-            sed -i 's/-DLLVM_TARGETS_TO_BUILD=.*/\"-DLLVM_TARGETS_TO_BUILD=AArch64;X86\" \\\\/' PKGBUILD || true
-            MAKEFLAGS='-j$(nproc)' makepkg -s --noconfirm --skippgpcheck
-            cp *.pkg.tar.zst /tmp/llvm-git-pkg/
-          "
+          for t in gcc g++ strip ar nm objcopy objdump readelf; do
+            ln -sf /usr/bin/clang      /usr/local/bin/aarch64-linux-gnu-$t 2>/dev/null || true
+          done
+          ln -sf /usr/bin/ld.lld       /usr/local/bin/aarch64-linux-gnu-ld
+          ln -sf /usr/bin/llvm-ar      /usr/local/bin/aarch64-linux-gnu-ar
+          ln -sf /usr/bin/llvm-nm      /usr/local/bin/aarch64-linux-gnu-nm
+          ln -sf /usr/bin/llvm-strip   /usr/local/bin/aarch64-linux-gnu-strip
+          ln -sf /usr/bin/llvm-objcopy /usr/local/bin/aarch64-linux-gnu-objcopy
+          ln -sf /usr/bin/llvm-objdump /usr/local/bin/aarch64-linux-gnu-objdump
+          ln -sf /usr/bin/llvm-readelf /usr/local/bin/aarch64-linux-gnu-readelf
 
-      - name: Install llvm-git
-        run: |
-          pacman -U --noconfirm /tmp/llvm-git-pkg/llvm-git*.pkg.tar.zst \
-            /tmp/llvm-git-pkg/clang-git*.pkg.tar.zst \
-            /tmp/llvm-git-pkg/lld-git*.pkg.tar.zst 2>/dev/null \
-            || pacman -U --noconfirm /tmp/llvm-git-pkg/*.pkg.tar.zst
-          clang --version
-
-      - name: Checkout kernel source + KernelSU submodule
+      - name: Checkout kernel source + init KernelSU submodule
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
@@ -496,7 +492,6 @@ jobs:
 
           sed -i 's/#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))/#if 1 \/* QC 5.10 backports 6.4+ SELinux AVC API *\//g' \
             kernel/selinux/rules.c
-
           sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)/#if 1 \/* QC 5.10 backports 6.10+ hashtab const API *\//g' \
             kernel/selinux/sepolicy.c
 
@@ -522,11 +517,11 @@ jobs:
             olddefconfig
 
           make O=out ARCH=arm64 \
-            CC="clang -march=armv8.2-a" \
-            LD=ld.lld \
+            CC=clang LD=ld.lld \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             LLVM=1 LLVM_IAS=1 \
+            KCFLAGS="-march=armv8.2-a" \
             KBUILD_BUILD_USER=lhuna \
             KBUILD_BUILD_HOST=lhuna \
             KBUILD_BUILD_TIMESTAMP="Thu Jan  1 00:00:00 UTC 2026" \
@@ -534,6 +529,7 @@ jobs:
             || {
               echo "===== BUILD FAILED ====="
               grep -E " error:|undefined reference to|: error" build.log | tail -100
+              echo "--- Last 80 lines ---"
               tail -80 build.log
               exit 1
             }
