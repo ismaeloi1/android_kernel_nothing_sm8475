@@ -180,7 +180,7 @@ jobs:
       - name: Init KernelSU submodule (full history for correct KSU_VERSION)
         run: |
           git submodule update --init KernelSU
-          git -C KernelSU fetch --unshallow
+          [ -f KernelSU/.git/shallow ] && git -C KernelSU fetch --unshallow || true
           echo "KernelSU commit count: $(git -C KernelSU rev-list --count HEAD)"
 
       - name: Setup SUSFS
@@ -469,7 +469,7 @@ jobs:
       - name: Init KernelSU submodule (full history for correct KSU_VERSION)
         run: |
           git submodule update --init KernelSU
-          git -C KernelSU fetch --unshallow
+          [ -f KernelSU/.git/shallow ] && git -C KernelSU fetch --unshallow || true
           echo "KernelSU commit count: $(git -C KernelSU rev-list --count HEAD)"
 
       - name: Setup SUSFS
