@@ -49,8 +49,9 @@ jobs:
             | grep -v '\^{}' | awk '{print $2}' | sed 's|refs/tags/||' \
             | grep '^v' | sort -V | tail -1)
           echo "KernelSU tag: $KSU_TAG"
-          git clone --depth=1 --branch "$KSU_TAG" https://github.com/tiann/KernelSU ../KernelSU
+          git clone --branch "$KSU_TAG" https://github.com/tiann/KernelSU ../KernelSU
           cd ../KernelSU
+          echo "KernelSU commit count: $(git rev-list --count HEAD)"
 
           # Apply SUSFS patch (some hunks may fail on version delta — that's OK)
           patch -p1 --fuzz=3 \
