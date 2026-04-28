@@ -6,108 +6,92 @@ on:
       - claude/kernelsu-symlink-setup-bV2Rs
   workflow_dispatch:
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared environment variables
+# ─────────────────────────────────────────────────────────────────────────────
+env:
+  KSU_TAG: "v3.2.4"
+  ARCH: arm64
+  CROSS_COMPILE: aarch64-linux-gnu-
+  CLANG_TRIPLE: aarch64-linux-gnu-
+
 jobs:
-  build:
-    runs-on: ubuntu-22.04
+# ─────────────────────────────────────────────────────────────────────────────
+# 1 · stable · pacman clang (Arch rolling, stable recent)
+# ─────────────────────────────────────────────────────────────────────────────
+  build-stable-pacman:
+    name: "stable · pacman clang"
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+      options: --privileged
 
     steps:
+      - name: Init pacman keyring & install deps
+        run: |
+          pacman-key --init
+          pacman-key --populate archlinux
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed \
+            git clang lld llvm \
+            bc dtc libelf flex bison openssl \
+            zip wget curl python perl lzop lz4 \
+            pahole
+
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Install dependencies
-        run: |
-          # Install LLVM 17 — clang-14 (Ubuntu 22.04 default) rejects
-          # -ftrivial-auto-var-init=zero used by techpack/camera and drivers/bluetooth
-          wget -qO - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
-          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" \
-            | sudo tee /etc/apt/sources.list.d/llvm-17.list
-          sudo apt-get update -y
-          sudo apt-get install -y \
-            git ccache automake flex lzop bison gperf build-essential zip curl \
-            zlib1g-dev libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev \
-            squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng \
-            maven libssl-dev pwgen libswitch-perl policycoreutils minicom \
-            libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 libx11-dev \
-            lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3 \
-            clang-17 lld-17 llvm-17 gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
-          # Prepend clang-17 tools so bare names (clang, ld.lld, llvm-ar …) resolve
-          # to version 17 for all subsequent steps
-          echo "/usr/lib/llvm-17/bin" >> "$GITHUB_PATH"
-          clang-17 --version
-
-      - name: Setup SUSFS patches
+      - name: Setup SUSFS
         run: |
           git clone --depth=1 --branch gki-android12-5.10 \
             https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu
-          echo "SUSFS cloned"
 
-      - name: Setup KernelSU (clone + SUSFS patch + symlink)
+      - name: Setup KernelSU — symlink (stable)
         run: |
-          KSU_TAG="v3.2.4"
-          echo "KernelSU tag: $KSU_TAG"
           git clone --branch "$KSU_TAG" https://github.com/tiann/KernelSU ../KernelSU
+          echo "KernelSU commit count: $(git -C ../KernelSU rev-list --count HEAD)"
           cd ../KernelSU
-          echo "KernelSU commit count: $(git rev-list --count HEAD)"
 
-          # Apply SUSFS patch (some hunks may fail on version delta — that's OK)
           patch -p1 --fuzz=3 \
             < "$GITHUB_WORKSPACE/../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
-            || echo "patch exited non-zero (partial apply) — applying critical fixes manually"
+            || echo "patch partial — applying fixes manually"
 
-          # Critical fix 1: remove kprobes dependency from Kconfig (mandatory for non-GKI)
           sed -i 's/^\s*depends on KPROBES && EXT4_FS//' kernel/Kconfig
 
-          # Critical fix 2: remove kprobe hook objects from Kbuild if still present
-          sed -i '/lsm_hook\.o/d' kernel/Kbuild
-          sed -i '/syscall_event_bridge\.o/d' kernel/Kbuild
-          sed -i '/syscall_hook_manager\.o/d' kernel/Kbuild
-          sed -i '/tp_marker\.o/d' kernel/Kbuild
-
-          echo "Kconfig after fix:"
-          grep -A2 "config KSU" kernel/Kconfig | head -6
-
-          # Critical fix 3: SELinux API compatibility for this QC 5.10 kernel.
-          #
-          # This kernel backports the 6.4+ SELinux AVC API:
-          #   avc_ss_reset(u32 seqno)                    — no selinux_avc* arg
-          #   selinux_status_update_policyload(u32 seqno) — no selinux_state* arg
-          #   selinux_state has no .avc member
-          # KernelSU v3 guards the new API with ">= 6.4"; force both guards to 1.
-          sed -i 's/#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))/#if 1 \/\* QC 5.10 backports 6.4+ SELinux AVC API *\//g' \
+          # SELinux API compat: QC 5.10 backports 6.4+ AVC API
+          sed -i 's/#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))/#if 1 \/* QC 5.10 backports 6.4+ SELinux AVC API *\//g' \
             kernel/selinux/rules.c
 
-          # This kernel also backports the 6.10+ hashtab_duplicate const-callback API.
-          # KernelSU guards CONST_IF_6_10 with ">= 6.10"; force that guard to 1.
-          sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)/#if 1 \/\* QC 5.10 backports 6.10+ hashtab const API *\//g' \
+          # SELinux compat: QC 5.10 backports 6.10+ hashtab const-callback API
+          sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)/#if 1 \/* QC 5.10 backports 6.10+ hashtab const API *\//g' \
             kernel/selinux/sepolicy.c
-
-          echo "SELinux compat fixes applied"
 
           cd "$GITHUB_WORKSPACE"
           ln -sfn ../../KernelSU/kernel drivers/kernelsu
-          echo "Symlink OK: $(readlink drivers/kernelsu)"
+          echo "Symlink: $(readlink drivers/kernelsu)"
 
       - name: Apply SUSFS kernel patches
         run: |
-          # fs/namespace.c and other kernel files are already patched in the repo;
-          # re-applying the .patch would produce duplicate function definitions.
-          # Only copy the SUSFS source files that come from the upstream susfs4ksu repo.
           cp ../susfs4ksu/kernel_patches/fs/susfs.c fs/susfs.c
           cp ../susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/susfs.h
           cp ../susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/susfs_def.h
-          echo "SUSFS source files updated from upstream"
 
       - name: Build kernel
         run: |
           mkdir -p out
           cp defconfig out/.config
-          make O=out ARCH=arm64 CC=clang \
+          make O=out ARCH=arm64 \
+            CC=clang LD=ld.lld \
             CROSS_COMPILE=aarch64-linux-gnu- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            LLVM=1 LLVM_IAS=1 \
             olddefconfig
 
-          make O=out ARCH=arm64 CC=clang \
+          make O=out ARCH=arm64 \
+            CC="clang -march=armv8.2-a" \
+            LD=ld.lld \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             LLVM=1 LLVM_IAS=1 \
@@ -117,9 +101,7 @@ jobs:
             -j$(nproc) 2>&1 | tee build.log \
             || {
               echo "===== BUILD FAILED ====="
-              echo "--- Error lines ---"
               grep -E " error:|undefined reference to|: error" build.log | tail -100
-              echo "--- Last 80 lines ---"
               tail -80 build.log
               exit 1
             }
@@ -132,20 +114,453 @@ jobs:
           cp .github/anykernel.sh AnyKernel3/anykernel.sh
           DATE=$(date +%Y%m%d)
           cd AnyKernel3
-          zip -r9 "../lhuna-kernel-pong-${DATE}.zip" . -x ".git/*" "README.md" "*placeholder"
+          zip -r9 "../lhuna-kernel-pong-${DATE}-stable-pacman.zip" . \
+            -x ".git/*" "README.md" "*placeholder"
           cd ..
-          ls -lh "lhuna-kernel-pong-${DATE}.zip"
+          ls -lh "lhuna-kernel-pong-${DATE}-stable-pacman.zip"
 
-      - name: Upload kernel artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: lhuna-kernel
-          path: lhuna-kernel-pong-*.zip
+          name: lhuna-kernel-stable-pacman
+          path: lhuna-kernel-pong-*-stable-pacman.zip
           if-no-files-found: error
 
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
+          name: build-log-stable-pacman
+          path: build.log
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2 · submodule · pacman clang
+# ─────────────────────────────────────────────────────────────────────────────
+  build-submodule-pacman:
+    name: "submodule · pacman clang"
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+      options: --privileged
+
+    steps:
+      - name: Init pacman keyring & install deps
+        run: |
+          pacman-key --init
+          pacman-key --populate archlinux
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed \
+            git clang lld llvm \
+            bc dtc libelf flex bison openssl \
+            zip wget curl python perl lzop lz4 \
+            pahole
+
+      - name: Checkout kernel source + KernelSU submodule
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: false
+
+      - name: Init KernelSU submodule (full history for correct KSU_VERSION)
+        run: |
+          git submodule update --init KernelSU
+          git -C KernelSU fetch --unshallow
+          echo "KernelSU commit count: $(git -C KernelSU rev-list --count HEAD)"
+
+      - name: Setup SUSFS
+        run: |
+          git clone --depth=1 --branch gki-android12-5.10 \
+            https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu
+
+      - name: Patch KernelSU & create drivers/kernelsu symlink
+        run: |
+          cd KernelSU
+
+          patch -p1 --fuzz=3 \
+            < "$GITHUB_WORKSPACE/../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
+            || echo "patch partial — applying fixes manually"
+
+          sed -i 's/^\s*depends on KPROBES && EXT4_FS//' kernel/Kconfig
+
+          # SELinux API compat: QC 5.10 backports 6.4+ AVC API
+          sed -i 's/#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))/#if 1 \/* QC 5.10 backports 6.4+ SELinux AVC API *\//g' \
+            kernel/selinux/rules.c
+
+          # SELinux compat: QC 5.10 backports 6.10+ hashtab const-callback API
+          sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)/#if 1 \/* QC 5.10 backports 6.10+ hashtab const API *\//g' \
+            kernel/selinux/sepolicy.c
+
+          cd "$GITHUB_WORKSPACE"
+          ln -sfn ../KernelSU/kernel drivers/kernelsu
+          echo "Symlink: $(readlink drivers/kernelsu)"
+
+      - name: Apply SUSFS kernel patches
+        run: |
+          cp ../susfs4ksu/kernel_patches/fs/susfs.c fs/susfs.c
+          cp ../susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/susfs.h
+          cp ../susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/susfs_def.h
+
+      - name: Build kernel
+        run: |
+          mkdir -p out
+          cp defconfig out/.config
+          make O=out ARCH=arm64 \
+            CC=clang LD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            LLVM=1 LLVM_IAS=1 \
+            olddefconfig
+
+          make O=out ARCH=arm64 \
+            CC="clang -march=armv8.2-a" \
+            LD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            LLVM=1 LLVM_IAS=1 \
+            KBUILD_BUILD_USER=lhuna \
+            KBUILD_BUILD_HOST=lhuna \
+            KBUILD_BUILD_TIMESTAMP="Thu Jan  1 00:00:00 UTC 2026" \
+            -j$(nproc) 2>&1 | tee build.log \
+            || {
+              echo "===== BUILD FAILED ====="
+              grep -E " error:|undefined reference to|: error" build.log | tail -100
+              tail -80 build.log
+              exit 1
+            }
+
+      - name: Package with AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
+          cp out/arch/arm64/boot/Image AnyKernel3/
+          [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/ || true
+          cp .github/anykernel.sh AnyKernel3/anykernel.sh
+          DATE=$(date +%Y%m%d)
+          cd AnyKernel3
+          zip -r9 "../lhuna-kernel-pong-${DATE}-submodule-pacman.zip" . \
+            -x ".git/*" "README.md" "*placeholder"
+          cd ..
+          ls -lh "lhuna-kernel-pong-${DATE}-submodule-pacman.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lhuna-kernel-submodule-pacman
+          path: lhuna-kernel-pong-*-submodule-pacman.zip
+          if-no-files-found: error
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-submodule-pacman
+          path: build.log
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3 · stable · llvm-git (AUR dev, cached weekly)
+# ─────────────────────────────────────────────────────────────────────────────
+  build-stable-aur:
+    name: "stable · llvm-git AUR"
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+      options: --privileged
+
+    steps:
+      - name: Init pacman keyring & install base deps
+        run: |
+          pacman-key --init
+          pacman-key --populate archlinux
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed \
+            git sudo cmake ninja python \
+            bc dtc libelf flex bison openssl \
+            zip wget curl perl lzop lz4 \
+            pahole
+
+      - name: Get current week for cache key
+        id: date
+        run: echo "week=$(date +%Y-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore llvm-git package cache
+        id: cache-llvm
+        uses: actions/cache@v4
+        with:
+          path: /tmp/llvm-git-pkg
+          key: arch-llvm-git-${{ steps.date.outputs.week }}
+          restore-keys: arch-llvm-git-
+
+      - name: Build llvm-git from AUR (if no cache)
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        run: |
+          # makepkg refuses to run as root — create a builder user
+          useradd -m builder
+          echo "builder ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+          mkdir -p /tmp/llvm-git-pkg
+
+          su builder -c "
+            git clone https://aur.archlinux.org/llvm-git.git /tmp/llvm-git-src
+            cd /tmp/llvm-git-src
+            # Restrict build targets to what we need (much faster)
+            sed -i 's/-DLLVM_TARGETS_TO_BUILD=.*/\"-DLLVM_TARGETS_TO_BUILD=AArch64;X86\" \\\\/' PKGBUILD || true
+            MAKEFLAGS='-j$(nproc)' makepkg -s --noconfirm --skippgpcheck
+            cp *.pkg.tar.zst /tmp/llvm-git-pkg/
+          "
+
+      - name: Install llvm-git
+        run: |
+          pacman -U --noconfirm /tmp/llvm-git-pkg/llvm-git*.pkg.tar.zst \
+            /tmp/llvm-git-pkg/clang-git*.pkg.tar.zst \
+            /tmp/llvm-git-pkg/lld-git*.pkg.tar.zst 2>/dev/null \
+            || pacman -U --noconfirm /tmp/llvm-git-pkg/*.pkg.tar.zst
+          clang --version
+
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup SUSFS
+        run: |
+          git clone --depth=1 --branch gki-android12-5.10 \
+            https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu
+
+      - name: Setup KernelSU — symlink (stable)
+        run: |
+          git clone --branch "$KSU_TAG" https://github.com/tiann/KernelSU ../KernelSU
+          echo "KernelSU commit count: $(git -C ../KernelSU rev-list --count HEAD)"
+          cd ../KernelSU
+
+          patch -p1 --fuzz=3 \
+            < "$GITHUB_WORKSPACE/../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
+            || echo "patch partial — applying fixes manually"
+
+          sed -i 's/^\s*depends on KPROBES && EXT4_FS//' kernel/Kconfig
+
+          sed -i 's/#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))/#if 1 \/* QC 5.10 backports 6.4+ SELinux AVC API *\//g' \
+            kernel/selinux/rules.c
+
+          sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)/#if 1 \/* QC 5.10 backports 6.10+ hashtab const API *\//g' \
+            kernel/selinux/sepolicy.c
+
+          cd "$GITHUB_WORKSPACE"
+          ln -sfn ../../KernelSU/kernel drivers/kernelsu
+          echo "Symlink: $(readlink drivers/kernelsu)"
+
+      - name: Apply SUSFS kernel patches
+        run: |
+          cp ../susfs4ksu/kernel_patches/fs/susfs.c fs/susfs.c
+          cp ../susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/susfs.h
+          cp ../susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/susfs_def.h
+
+      - name: Build kernel
+        run: |
+          mkdir -p out
+          cp defconfig out/.config
+          make O=out ARCH=arm64 \
+            CC=clang LD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            LLVM=1 LLVM_IAS=1 \
+            olddefconfig
+
+          make O=out ARCH=arm64 \
+            CC="clang -march=armv8.2-a" \
+            LD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            LLVM=1 LLVM_IAS=1 \
+            KBUILD_BUILD_USER=lhuna \
+            KBUILD_BUILD_HOST=lhuna \
+            KBUILD_BUILD_TIMESTAMP="Thu Jan  1 00:00:00 UTC 2026" \
+            -j$(nproc) 2>&1 | tee build.log \
+            || {
+              echo "===== BUILD FAILED ====="
+              grep -E " error:|undefined reference to|: error" build.log | tail -100
+              tail -80 build.log
+              exit 1
+            }
+
+      - name: Package with AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
+          cp out/arch/arm64/boot/Image AnyKernel3/
+          [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/ || true
+          cp .github/anykernel.sh AnyKernel3/anykernel.sh
+          DATE=$(date +%Y%m%d)
+          cd AnyKernel3
+          zip -r9 "../lhuna-kernel-pong-${DATE}-stable-aur.zip" . \
+            -x ".git/*" "README.md" "*placeholder"
+          cd ..
+          ls -lh "lhuna-kernel-pong-${DATE}-stable-aur.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lhuna-kernel-stable-aur
+          path: lhuna-kernel-pong-*-stable-aur.zip
+          if-no-files-found: error
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-stable-aur
+          path: build.log
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4 · submodule · llvm-git (AUR dev, cached weekly)
+# ─────────────────────────────────────────────────────────────────────────────
+  build-submodule-aur:
+    name: "submodule · llvm-git AUR"
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+      options: --privileged
+
+    steps:
+      - name: Init pacman keyring & install base deps
+        run: |
+          pacman-key --init
+          pacman-key --populate archlinux
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed \
+            git sudo cmake ninja python \
+            bc dtc libelf flex bison openssl \
+            zip wget curl perl lzop lz4 \
+            pahole
+
+      - name: Get current week for cache key
+        id: date
+        run: echo "week=$(date +%Y-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore llvm-git package cache
+        id: cache-llvm
+        uses: actions/cache@v4
+        with:
+          path: /tmp/llvm-git-pkg
+          key: arch-llvm-git-${{ steps.date.outputs.week }}
+          restore-keys: arch-llvm-git-
+
+      - name: Build llvm-git from AUR (if no cache)
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        run: |
+          useradd -m builder
+          echo "builder ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+          mkdir -p /tmp/llvm-git-pkg
+
+          su builder -c "
+            git clone https://aur.archlinux.org/llvm-git.git /tmp/llvm-git-src
+            cd /tmp/llvm-git-src
+            sed -i 's/-DLLVM_TARGETS_TO_BUILD=.*/\"-DLLVM_TARGETS_TO_BUILD=AArch64;X86\" \\\\/' PKGBUILD || true
+            MAKEFLAGS='-j$(nproc)' makepkg -s --noconfirm --skippgpcheck
+            cp *.pkg.tar.zst /tmp/llvm-git-pkg/
+          "
+
+      - name: Install llvm-git
+        run: |
+          pacman -U --noconfirm /tmp/llvm-git-pkg/llvm-git*.pkg.tar.zst \
+            /tmp/llvm-git-pkg/clang-git*.pkg.tar.zst \
+            /tmp/llvm-git-pkg/lld-git*.pkg.tar.zst 2>/dev/null \
+            || pacman -U --noconfirm /tmp/llvm-git-pkg/*.pkg.tar.zst
+          clang --version
+
+      - name: Checkout kernel source + KernelSU submodule
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: false
+
+      - name: Init KernelSU submodule (full history for correct KSU_VERSION)
+        run: |
+          git submodule update --init KernelSU
+          git -C KernelSU fetch --unshallow
+          echo "KernelSU commit count: $(git -C KernelSU rev-list --count HEAD)"
+
+      - name: Setup SUSFS
+        run: |
+          git clone --depth=1 --branch gki-android12-5.10 \
+            https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu
+
+      - name: Patch KernelSU & create drivers/kernelsu symlink
+        run: |
+          cd KernelSU
+
+          patch -p1 --fuzz=3 \
+            < "$GITHUB_WORKSPACE/../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
+            || echo "patch partial — applying fixes manually"
+
+          sed -i 's/^\s*depends on KPROBES && EXT4_FS//' kernel/Kconfig
+
+          sed -i 's/#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))/#if 1 \/* QC 5.10 backports 6.4+ SELinux AVC API *\//g' \
+            kernel/selinux/rules.c
+
+          sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)/#if 1 \/* QC 5.10 backports 6.10+ hashtab const API *\//g' \
+            kernel/selinux/sepolicy.c
+
+          cd "$GITHUB_WORKSPACE"
+          ln -sfn ../KernelSU/kernel drivers/kernelsu
+          echo "Symlink: $(readlink drivers/kernelsu)"
+
+      - name: Apply SUSFS kernel patches
+        run: |
+          cp ../susfs4ksu/kernel_patches/fs/susfs.c fs/susfs.c
+          cp ../susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/susfs.h
+          cp ../susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/susfs_def.h
+
+      - name: Build kernel
+        run: |
+          mkdir -p out
+          cp defconfig out/.config
+          make O=out ARCH=arm64 \
+            CC=clang LD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            LLVM=1 LLVM_IAS=1 \
+            olddefconfig
+
+          make O=out ARCH=arm64 \
+            CC="clang -march=armv8.2-a" \
+            LD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            LLVM=1 LLVM_IAS=1 \
+            KBUILD_BUILD_USER=lhuna \
+            KBUILD_BUILD_HOST=lhuna \
+            KBUILD_BUILD_TIMESTAMP="Thu Jan  1 00:00:00 UTC 2026" \
+            -j$(nproc) 2>&1 | tee build.log \
+            || {
+              echo "===== BUILD FAILED ====="
+              grep -E " error:|undefined reference to|: error" build.log | tail -100
+              tail -80 build.log
+              exit 1
+            }
+
+      - name: Package with AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
+          cp out/arch/arm64/boot/Image AnyKernel3/
+          [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/ || true
+          cp .github/anykernel.sh AnyKernel3/anykernel.sh
+          DATE=$(date +%Y%m%d)
+          cd AnyKernel3
+          zip -r9 "../lhuna-kernel-pong-${DATE}-submodule-aur.zip" . \
+            -x ".git/*" "README.md" "*placeholder"
+          cd ..
+          ls -lh "lhuna-kernel-pong-${DATE}-submodule-aur.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lhuna-kernel-submodule-aur
+          path: lhuna-kernel-pong-*-submodule-aur.zip
+          if-no-files-found: error
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-submodule-aur
           path: build.log
