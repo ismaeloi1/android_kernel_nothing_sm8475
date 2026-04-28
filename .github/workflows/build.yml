@@ -29,7 +29,7 @@ jobs:
           pacman -S --noconfirm --needed \
             git clang lld llvm \
             bc dtc elfutils flex bison openssl \
-            zip wget curl python perl lzop lz4 pahole
+            zip wget curl python perl lzop lz4 pahole pigz
           clang --version && ld.lld --version && llvm-ar --version | head -1
           # git safe.directory — runner UID != container root UID
           git config --global --add safe.directory '*'
@@ -158,7 +158,7 @@ jobs:
           pacman -S --noconfirm --needed \
             git clang lld llvm \
             bc dtc elfutils flex bison openssl \
-            zip wget curl python perl lzop lz4 pahole
+            zip wget curl python perl lzop lz4 pahole pigz
           clang --version && ld.lld --version && llvm-ar --version | head -1
           git config --global --add safe.directory '*'
           ln -sf /usr/bin/clang        /usr/local/bin/aarch64-linux-gnu-gcc
@@ -288,7 +288,7 @@ jobs:
           pacman -S --noconfirm --needed \
             git rust \
             bc dtc elfutils flex bison openssl \
-            zip wget curl python perl lzop lz4 pahole
+            zip wget curl python perl lzop lz4 pahole pigz
           git config --global --add safe.directory '*'
 
           # Create non-root builder user (makepkg refuses root)
@@ -431,7 +431,7 @@ jobs:
           pacman -S --noconfirm --needed \
             git rust \
             bc dtc elfutils flex bison openssl \
-            zip wget curl python perl lzop lz4 pahole
+            zip wget curl python perl lzop lz4 pahole pigz
           git config --global --add safe.directory '*'
 
           useradd -m -G wheel builder
