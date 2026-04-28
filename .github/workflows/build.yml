@@ -30,12 +30,12 @@ jobs:
             git clang lld llvm \
             bc dtc elfutils flex bison openssl \
             zip wget curl python perl lzop lz4 pahole
-          # Verify toolchain
           clang --version && ld.lld --version && llvm-ar --version | head -1
-          # LLVM wrappers for aarch64-linux-gnu- prefix used by kernel scripts
-          for t in gcc g++ ld strip ar nm objcopy objdump readelf; do
-            ln -sf /usr/bin/clang      /usr/local/bin/aarch64-linux-gnu-$t 2>/dev/null || true
-          done
+          # git safe.directory — runner UID != container root UID
+          git config --global --add safe.directory '*'
+          # LLVM wrappers for aarch64-linux-gnu- prefix still probed by kernel scripts
+          ln -sf /usr/bin/clang        /usr/local/bin/aarch64-linux-gnu-gcc
+          ln -sf /usr/bin/clang++      /usr/local/bin/aarch64-linux-gnu-g++
           ln -sf /usr/bin/ld.lld       /usr/local/bin/aarch64-linux-gnu-ld
           ln -sf /usr/bin/llvm-ar      /usr/local/bin/aarch64-linux-gnu-ar
           ln -sf /usr/bin/llvm-nm      /usr/local/bin/aarch64-linux-gnu-nm
@@ -65,11 +65,8 @@ jobs:
             || echo "patch partial — applying fixes manually"
 
           sed -i 's/^\s*depends on KPROBES && EXT4_FS//' kernel/Kconfig
-
-          # SELinux API compat: QC 5.10 backports 6.4+ AVC API
           sed -i 's/#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))/#if 1 \/* QC 5.10 backports 6.4+ SELinux AVC API *\//g' \
             kernel/selinux/rules.c
-          # SELinux compat: QC 5.10 backports 6.10+ hashtab const-callback API
           sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)/#if 1 \/* QC 5.10 backports 6.10+ hashtab const API *\//g' \
             kernel/selinux/sepolicy.c
 
@@ -89,6 +86,7 @@ jobs:
           cp defconfig out/.config
           make O=out ARCH=arm64 \
             CC=clang LD=ld.lld \
+            HOSTCC=clang HOSTCXX=clang++ \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             LLVM=1 LLVM_IAS=1 \
@@ -96,6 +94,7 @@ jobs:
 
           make O=out ARCH=arm64 \
             CC=clang LD=ld.lld \
+            HOSTCC=clang HOSTCXX=clang++ \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             LLVM=1 LLVM_IAS=1 \
@@ -161,9 +160,9 @@ jobs:
             bc dtc elfutils flex bison openssl \
             zip wget curl python perl lzop lz4 pahole
           clang --version && ld.lld --version && llvm-ar --version | head -1
-          for t in gcc g++ ld strip ar nm objcopy objdump readelf; do
-            ln -sf /usr/bin/clang      /usr/local/bin/aarch64-linux-gnu-$t 2>/dev/null || true
-          done
+          git config --global --add safe.directory '*'
+          ln -sf /usr/bin/clang        /usr/local/bin/aarch64-linux-gnu-gcc
+          ln -sf /usr/bin/clang++      /usr/local/bin/aarch64-linux-gnu-g++
           ln -sf /usr/bin/ld.lld       /usr/local/bin/aarch64-linux-gnu-ld
           ln -sf /usr/bin/llvm-ar      /usr/local/bin/aarch64-linux-gnu-ar
           ln -sf /usr/bin/llvm-nm      /usr/local/bin/aarch64-linux-gnu-nm
@@ -172,7 +171,7 @@ jobs:
           ln -sf /usr/bin/llvm-objdump /usr/local/bin/aarch64-linux-gnu-objdump
           ln -sf /usr/bin/llvm-readelf /usr/local/bin/aarch64-linux-gnu-readelf
 
-      - name: Checkout kernel source + init KernelSU submodule
+      - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
@@ -192,18 +191,14 @@ jobs:
       - name: Patch KernelSU & create drivers/kernelsu symlink
         run: |
           cd KernelSU
-
           patch -p1 --fuzz=3 \
             < "$GITHUB_WORKSPACE/../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
             || echo "patch partial — applying fixes manually"
-
           sed -i 's/^\s*depends on KPROBES && EXT4_FS//' kernel/Kconfig
-
           sed -i 's/#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))/#if 1 \/* QC 5.10 backports 6.4+ SELinux AVC API *\//g' \
             kernel/selinux/rules.c
           sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)/#if 1 \/* QC 5.10 backports 6.10+ hashtab const API *\//g' \
             kernel/selinux/sepolicy.c
-
           cd "$GITHUB_WORKSPACE"
           ln -sfn ../KernelSU/kernel drivers/kernelsu
           echo "Symlink: $(readlink drivers/kernelsu)"
@@ -220,6 +215,7 @@ jobs:
           cp defconfig out/.config
           make O=out ARCH=arm64 \
             CC=clang LD=ld.lld \
+            HOSTCC=clang HOSTCXX=clang++ \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             LLVM=1 LLVM_IAS=1 \
@@ -227,6 +223,7 @@ jobs:
 
           make O=out ARCH=arm64 \
             CC=clang LD=ld.lld \
+            HOSTCC=clang HOSTCXX=clang++ \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             LLVM=1 LLVM_IAS=1 \
@@ -272,48 +269,49 @@ jobs:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3 · stable · llvm-git via Chaotic-AUR (pre-built, dev, no makepkg needed)
+# 3 · stable · llvm-minimal-git via paru (AUR dev, no docs/OCaml/LLDB)
 # ─────────────────────────────────────────────────────────────────────────────
   build-stable-aur:
-    name: "stable · llvm-git (Chaotic-AUR)"
+    name: "stable · paru llvm-minimal-git"
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel
       options: --privileged
 
     steps:
-      - name: Init pacman, add Chaotic-AUR, install llvm-git
+      - name: Init pacman, install paru, build llvm-minimal-git
         run: |
           pacman-key --init
           pacman-key --populate archlinux
           pacman -Syu --noconfirm
-
-          # Install non-LLVM build deps first
+          # Base deps + rust (needed to build paru)
           pacman -S --noconfirm --needed \
-            git bc dtc elfutils flex bison openssl \
+            git rust \
+            bc dtc elfutils flex bison openssl \
             zip wget curl python perl lzop lz4 pahole
+          git config --global --add safe.directory '*'
 
-          # Add Chaotic-AUR (pre-built AUR binaries, updated hourly)
-          pacman-key --recv-key 3056513887B78AEB \
-            --keyserver keyserver.ubuntu.com
-          pacman-key --lsign-key 3056513887B78AEB
-          pacman -U --noconfirm \
-            'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst' \
-            'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst'
-          printf '\n[chaotic-aur]\nInclude = /etc/pacman.d/chaotic-mirrorlist\n' \
-            >> /etc/pacman.conf
-          pacman -Sy --noconfirm
+          # Create non-root builder user (makepkg refuses root)
+          useradd -m -G wheel builder
+          echo "builder ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-          # Install llvm-git stack from Chaotic-AUR (no makepkg, no compilation)
-          pacman -S --noconfirm --needed \
-            llvm-git llvm-libs-git clang-git lld-git
+          # Bootstrap paru from AUR
+          su builder -c "
+            git clone https://aur.archlinux.org/paru.git /tmp/paru-src
+            cd /tmp/paru-src
+            MAKEFLAGS=\"-j$(nproc)\" makepkg -si --noconfirm
+          "
+
+          # Install llvm-minimal-git (clang+lld+llvm core only, no docs/OCaml/LLDB)
+          su builder -c "
+            MAKEFLAGS=\"-j$(nproc)\" NINJAFLAGS=\"-j$(nproc)\" \
+            paru -S --noconfirm --skipreview --noprogressbar llvm-minimal-git
+          "
 
           clang --version && ld.lld --version && llvm-ar --version | head -1
 
-          # LLVM wrappers for aarch64-linux-gnu- prefix
-          for t in gcc g++ strip ar nm objcopy objdump readelf; do
-            ln -sf /usr/bin/clang      /usr/local/bin/aarch64-linux-gnu-$t 2>/dev/null || true
-          done
+          ln -sf /usr/bin/clang        /usr/local/bin/aarch64-linux-gnu-gcc
+          ln -sf /usr/bin/clang++      /usr/local/bin/aarch64-linux-gnu-g++
           ln -sf /usr/bin/ld.lld       /usr/local/bin/aarch64-linux-gnu-ld
           ln -sf /usr/bin/llvm-ar      /usr/local/bin/aarch64-linux-gnu-ar
           ln -sf /usr/bin/llvm-nm      /usr/local/bin/aarch64-linux-gnu-nm
@@ -337,18 +335,14 @@ jobs:
           git clone --branch "$KSU_TAG" https://github.com/tiann/KernelSU ../KernelSU
           echo "KernelSU commit count: $(git -C ../KernelSU rev-list --count HEAD)"
           cd ../KernelSU
-
           patch -p1 --fuzz=3 \
             < "$GITHUB_WORKSPACE/../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
             || echo "patch partial — applying fixes manually"
-
           sed -i 's/^\s*depends on KPROBES && EXT4_FS//' kernel/Kconfig
-
           sed -i 's/#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))/#if 1 \/* QC 5.10 backports 6.4+ SELinux AVC API *\//g' \
             kernel/selinux/rules.c
           sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)/#if 1 \/* QC 5.10 backports 6.10+ hashtab const API *\//g' \
             kernel/selinux/sepolicy.c
-
           cd "$GITHUB_WORKSPACE"
           ln -sfn ../../KernelSU/kernel drivers/kernelsu
           echo "Symlink: $(readlink drivers/kernelsu)"
@@ -365,6 +359,7 @@ jobs:
           cp defconfig out/.config
           make O=out ARCH=arm64 \
             CC=clang LD=ld.lld \
+            HOSTCC=clang HOSTCXX=clang++ \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             LLVM=1 LLVM_IAS=1 \
@@ -372,6 +367,7 @@ jobs:
 
           make O=out ARCH=arm64 \
             CC=clang LD=ld.lld \
+            HOSTCC=clang HOSTCXX=clang++ \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             LLVM=1 LLVM_IAS=1 \
@@ -417,44 +413,45 @@ jobs:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4 · submodule · llvm-git via Chaotic-AUR
+# 4 · submodule · llvm-minimal-git via paru
 # ─────────────────────────────────────────────────────────────────────────────
   build-submodule-aur:
-    name: "submodule · llvm-git (Chaotic-AUR)"
+    name: "submodule · paru llvm-minimal-git"
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel
       options: --privileged
 
     steps:
-      - name: Init pacman, add Chaotic-AUR, install llvm-git
+      - name: Init pacman, install paru, build llvm-minimal-git
         run: |
           pacman-key --init
           pacman-key --populate archlinux
           pacman -Syu --noconfirm
-
           pacman -S --noconfirm --needed \
-            git bc dtc elfutils flex bison openssl \
+            git rust \
+            bc dtc elfutils flex bison openssl \
             zip wget curl python perl lzop lz4 pahole
+          git config --global --add safe.directory '*'
 
-          pacman-key --recv-key 3056513887B78AEB \
-            --keyserver keyserver.ubuntu.com
-          pacman-key --lsign-key 3056513887B78AEB
-          pacman -U --noconfirm \
-            'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst' \
-            'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst'
-          printf '\n[chaotic-aur]\nInclude = /etc/pacman.d/chaotic-mirrorlist\n' \
-            >> /etc/pacman.conf
-          pacman -Sy --noconfirm
+          useradd -m -G wheel builder
+          echo "builder ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-          pacman -S --noconfirm --needed \
-            llvm-git llvm-libs-git clang-git lld-git
+          su builder -c "
+            git clone https://aur.archlinux.org/paru.git /tmp/paru-src
+            cd /tmp/paru-src
+            MAKEFLAGS=\"-j$(nproc)\" makepkg -si --noconfirm
+          "
+
+          su builder -c "
+            MAKEFLAGS=\"-j$(nproc)\" NINJAFLAGS=\"-j$(nproc)\" \
+            paru -S --noconfirm --skipreview --noprogressbar llvm-minimal-git
+          "
 
           clang --version && ld.lld --version && llvm-ar --version | head -1
 
-          for t in gcc g++ strip ar nm objcopy objdump readelf; do
-            ln -sf /usr/bin/clang      /usr/local/bin/aarch64-linux-gnu-$t 2>/dev/null || true
-          done
+          ln -sf /usr/bin/clang        /usr/local/bin/aarch64-linux-gnu-gcc
+          ln -sf /usr/bin/clang++      /usr/local/bin/aarch64-linux-gnu-g++
           ln -sf /usr/bin/ld.lld       /usr/local/bin/aarch64-linux-gnu-ld
           ln -sf /usr/bin/llvm-ar      /usr/local/bin/aarch64-linux-gnu-ar
           ln -sf /usr/bin/llvm-nm      /usr/local/bin/aarch64-linux-gnu-nm
@@ -463,7 +460,7 @@ jobs:
           ln -sf /usr/bin/llvm-objdump /usr/local/bin/aarch64-linux-gnu-objdump
           ln -sf /usr/bin/llvm-readelf /usr/local/bin/aarch64-linux-gnu-readelf
 
-      - name: Checkout kernel source + init KernelSU submodule
+      - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
@@ -483,18 +480,14 @@ jobs:
       - name: Patch KernelSU & create drivers/kernelsu symlink
         run: |
           cd KernelSU
-
           patch -p1 --fuzz=3 \
             < "$GITHUB_WORKSPACE/../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
             || echo "patch partial — applying fixes manually"
-
           sed -i 's/^\s*depends on KPROBES && EXT4_FS//' kernel/Kconfig
-
           sed -i 's/#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))/#if 1 \/* QC 5.10 backports 6.4+ SELinux AVC API *\//g' \
             kernel/selinux/rules.c
           sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)/#if 1 \/* QC 5.10 backports 6.10+ hashtab const API *\//g' \
             kernel/selinux/sepolicy.c
-
           cd "$GITHUB_WORKSPACE"
           ln -sfn ../KernelSU/kernel drivers/kernelsu
           echo "Symlink: $(readlink drivers/kernelsu)"
@@ -511,6 +504,7 @@ jobs:
           cp defconfig out/.config
           make O=out ARCH=arm64 \
             CC=clang LD=ld.lld \
+            HOSTCC=clang HOSTCXX=clang++ \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             LLVM=1 LLVM_IAS=1 \
@@ -518,6 +512,7 @@ jobs:
 
           make O=out ARCH=arm64 \
             CC=clang LD=ld.lld \
+            HOSTCC=clang HOSTCXX=clang++ \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             LLVM=1 LLVM_IAS=1 \
