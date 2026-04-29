@@ -76,9 +76,12 @@ jobs:
             echo "/opt/llvm/lib" > /etc/ld.so.conf.d/llvm.conf
             ldconfig
             for bin in clang clang++ lld ld.lld llvm-ar llvm-nm llvm-strip \
-                       llvm-objcopy llvm-objdump llvm-readelf; do
+                       llvm-objcopy llvm-objdump llvm-readobj llvm-readelf; do
               [ -f "/opt/llvm/bin/$bin" ] && ln -sf "/opt/llvm/bin/$bin" "/usr/local/bin/$bin"
             done
+            # toolchain-only install has readobj but not readelf; alias it
+            [ ! -f /usr/local/bin/llvm-readelf ] && \
+              ln -sf /usr/local/bin/llvm-readobj /usr/local/bin/llvm-readelf
           else
             pacman -S --noconfirm --needed clang lld llvm
           fi
@@ -94,7 +97,8 @@ jobs:
           ln -sf "$(which llvm-strip)"   /usr/local/bin/aarch64-linux-gnu-strip
           ln -sf "$(which llvm-objcopy)" /usr/local/bin/aarch64-linux-gnu-objcopy
           ln -sf "$(which llvm-objdump)" /usr/local/bin/aarch64-linux-gnu-objdump
-          ln -sf "$(which llvm-readelf)" /usr/local/bin/aarch64-linux-gnu-readelf
+          READELF=$(command -v llvm-readelf 2>/dev/null || command -v llvm-readobj 2>/dev/null)
+          [ -n "$READELF" ] && ln -sf "$READELF" /usr/local/bin/aarch64-linux-gnu-readelf
 
       - name: Checkout kernel source
         uses: actions/checkout@v4
