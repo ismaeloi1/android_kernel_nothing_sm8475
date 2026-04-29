@@ -46,7 +46,7 @@ jobs:
           pacman-key --populate archlinux
           pacman -Syu --noconfirm
           pacman -S --noconfirm --needed \
-            git bc dtc elfutils flex bison openssl \
+            git bc dtc elfutils flex bison openssl libxml2 \
             zip wget curl python perl lzop lz4 pahole pigz
           git config --global --add safe.directory '*'
 
