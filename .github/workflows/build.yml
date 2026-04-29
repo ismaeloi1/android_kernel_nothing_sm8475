@@ -8,7 +8,6 @@ on:
 
 env:
   KSU_TAG: "v3.2.4"
-  LLVM_VER: "22.1.4"
 
 jobs:
   build:
@@ -24,13 +23,13 @@ jobs:
             label: "pacman · submodule"
             toolchain: pacman
             ksu: submodule
-          - variant: llvm22-symlink
-            label: "llvm-22 · symlink"
-            toolchain: llvm22
+          - variant: llvmgit-symlink
+            label: "llvm-git · symlink"
+            toolchain: llvm-git
             ksu: symlink
-          - variant: llvm22-submodule
-            label: "llvm-22 · submodule"
-            toolchain: llvm22
+          - variant: llvmgit-submodule
+            label: "llvm-git · submodule"
+            toolchain: llvm-git
             ksu: submodule
 
     name: ${{ matrix.label }}
@@ -46,16 +45,34 @@ jobs:
           pacman-key --populate archlinux
           pacman -Syu --noconfirm
           pacman -S --noconfirm --needed \
-            git bc dtc elfutils flex bison openssl libxml2 \
+            git bc dtc elfutils flex bison openssl \
             zip wget curl python perl lzop lz4 pahole pigz
           git config --global --add safe.directory '*'
 
-          if [ "${{ matrix.toolchain }}" = "llvm22" ]; then
-            echo "-- Downloading LLVM ${LLVM_VER} prebuilt..."
-            wget -q "https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VER}/LLVM-${LLVM_VER}-Linux-X64.tar.xz"
-            mkdir -p /opt/llvm
-            tar -xf "LLVM-${LLVM_VER}-Linux-X64.tar.xz" -C /opt/llvm --strip-components=1
-            rm "LLVM-${LLVM_VER}-Linux-X64.tar.xz"
+          if [ "${{ matrix.toolchain }}" = "llvm-git" ]; then
+            # Build clang+lld from llvm-project git HEAD, no AUR packaging needed
+            pacman -S --noconfirm --needed cmake ninja
+            git clone --depth=1 https://github.com/llvm/llvm-project.git /tmp/llvm-src
+            cmake -G Ninja \
+              -S /tmp/llvm-src/llvm \
+              -B /tmp/llvm-build \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX=/opt/llvm \
+              -DLLVM_ENABLE_PROJECTS="clang;lld" \
+              -DLLVM_TARGETS_TO_BUILD="X86;AArch64" \
+              -DLLVM_ENABLE_ASSERTIONS=OFF \
+              -DLLVM_INCLUDE_TESTS=OFF \
+              -DLLVM_INCLUDE_BENCHMARKS=OFF \
+              -DLLVM_INCLUDE_EXAMPLES=OFF \
+              -DLLVM_INCLUDE_DOCS=OFF \
+              -DLLVM_BUILD_TESTS=OFF \
+              -DCLANG_INCLUDE_TESTS=OFF \
+              -DLLVM_ENABLE_ZLIB=OFF \
+              -DLLVM_ENABLE_ZSTD=OFF \
+              -DLLVM_ENABLE_LIBXML2=OFF \
+              -DLLVM_INSTALL_TOOLCHAIN_ONLY=ON
+            ninja -C /tmp/llvm-build -j$(nproc) install
+            rm -rf /tmp/llvm-src /tmp/llvm-build
             echo "/opt/llvm/lib" > /etc/ld.so.conf.d/llvm.conf
             ldconfig
             for bin in clang clang++ lld ld.lld llvm-ar llvm-nm llvm-strip \
