@@ -148,6 +148,7 @@ jobs:
 
       - name: Build kernel
         run: |
+          set -o pipefail
           export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
           which clang && clang --version || { echo "ERROR: clang not in PATH"; exit 1; }
           mkdir -p out
@@ -169,13 +170,14 @@ jobs:
             KCFLAGS="-march=armv8.2-a" \
             KBUILD_BUILD_USER=lhuna \
             KBUILD_BUILD_HOST=lhuna \
-            -j$(nproc) 2>&1 | tee build.log \
-            || {
-              echo "===== BUILD FAILED ====="
-              grep -E " error:|undefined reference to|: error" build.log | tail -80
-              tail -60 build.log
-              exit 1
-            }
+            -j$(nproc) 2>&1 | tee build.log
+
+          [ -f out/arch/arm64/boot/Image ] || {
+            echo "===== BUILD FAILED — no Image produced ====="
+            grep -E " error:|undefined reference to" build.log | tail -50
+            tail -40 build.log
+            exit 1
+          }
 
       - name: Package kernel
         run: |
