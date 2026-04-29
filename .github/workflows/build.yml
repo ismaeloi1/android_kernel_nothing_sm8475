@@ -10,71 +10,119 @@ env:
   KSU_TAG: "v3.2.4"
 
 jobs:
-# ─────────────────────────────────────────────────────────────────────────────
-# 1 · stable · pacman clang (Arch rolling, stable recent)
-# ─────────────────────────────────────────────────────────────────────────────
-  build-stable-pacman:
-    name: "stable · pacman clang"
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: clang18-symlink
+            label: "clang-18 · symlink"
+            clang: "18"
+            ksu: symlink
+          - variant: clang18-submodule
+            label: "clang-18 · submodule"
+            clang: "18"
+            ksu: submodule
+          - variant: clang21-symlink
+            label: "clang-21 · symlink"
+            clang: "21"
+            ksu: symlink
+          - variant: clang21-submodule
+            label: "clang-21 · submodule"
+            clang: "21"
+            ksu: submodule
+
+    name: ${{ matrix.label }}
     runs-on: ubuntu-latest
-    container:
-      image: archlinux:base-devel
-      options: --privileged
 
     steps:
-      - name: Init pacman & install deps
+      - name: Install build dependencies
         run: |
-          pacman-key --init
-          pacman-key --populate archlinux
-          pacman -Syu --noconfirm
-          pacman -S --noconfirm --needed \
-            git clang lld llvm \
-            bc dtc elfutils flex bison openssl \
-            zip wget curl python perl lzop lz4 pahole pigz
-          clang --version && ld.lld --version && llvm-ar --version | head -1
-          # git safe.directory — runner UID != container root UID
-          git config --global --add safe.directory '*'
-          # LLVM wrappers for aarch64-linux-gnu- prefix still probed by kernel scripts
-          ln -sf /usr/bin/clang        /usr/local/bin/aarch64-linux-gnu-gcc
-          ln -sf /usr/bin/clang++      /usr/local/bin/aarch64-linux-gnu-g++
-          ln -sf /usr/bin/ld.lld       /usr/local/bin/aarch64-linux-gnu-ld
-          ln -sf /usr/bin/llvm-ar      /usr/local/bin/aarch64-linux-gnu-ar
-          ln -sf /usr/bin/llvm-nm      /usr/local/bin/aarch64-linux-gnu-nm
-          ln -sf /usr/bin/llvm-strip   /usr/local/bin/aarch64-linux-gnu-strip
-          ln -sf /usr/bin/llvm-objcopy /usr/local/bin/aarch64-linux-gnu-objcopy
-          ln -sf /usr/bin/llvm-objdump /usr/local/bin/aarch64-linux-gnu-objdump
-          ln -sf /usr/bin/llvm-readelf /usr/local/bin/aarch64-linux-gnu-readelf
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            bc bison flex libelf-dev libssl-dev \
+            device-tree-compiler \
+            build-essential zip python3 perl \
+            lzop lz4 dwarves pigz
+
+          if [ "${{ matrix.clang }}" = "21" ]; then
+            wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+            sudo bash llvm.sh 21
+            sudo apt-get install -y clang-21 lld-21 llvm-21
+            for t in clang clang++ ld.lld llvm-ar llvm-nm llvm-strip llvm-objcopy llvm-objdump llvm-readelf; do
+              b="${t%-*}-21" 2>/dev/null || true
+              case "$t" in
+                clang)        sudo update-alternatives --install /usr/bin/clang        clang        /usr/bin/clang-21        100 ;;
+                clang++)      sudo update-alternatives --install /usr/bin/clang++      clang++      /usr/bin/clang++-21      100 ;;
+                ld.lld)       sudo update-alternatives --install /usr/bin/ld.lld       ld.lld       /usr/bin/ld.lld-21       100 ;;
+                llvm-ar)      sudo update-alternatives --install /usr/bin/llvm-ar      llvm-ar      /usr/bin/llvm-ar-21      100 ;;
+                llvm-nm)      sudo update-alternatives --install /usr/bin/llvm-nm      llvm-nm      /usr/bin/llvm-nm-21      100 ;;
+                llvm-strip)   sudo update-alternatives --install /usr/bin/llvm-strip   llvm-strip   /usr/bin/llvm-strip-21   100 ;;
+                llvm-objcopy) sudo update-alternatives --install /usr/bin/llvm-objcopy llvm-objcopy /usr/bin/llvm-objcopy-21 100 ;;
+                llvm-objdump) sudo update-alternatives --install /usr/bin/llvm-objdump llvm-objdump /usr/bin/llvm-objdump-21 100 ;;
+                llvm-readelf) sudo update-alternatives --install /usr/bin/llvm-readelf llvm-readelf /usr/bin/llvm-readelf-21 100 ;;
+              esac
+            done
+          else
+            sudo apt-get install -y clang lld llvm
+          fi
+
+          clang --version
+          ld.lld --version
+
+          # Wrappers so the kernel build system finds aarch64-linux-gnu-* via clang
+          for tool in gcc g++; do
+            sudo ln -sf "$(which clang)" /usr/local/bin/aarch64-linux-gnu-${tool}
+          done
+          sudo ln -sf "$(which ld.lld)"       /usr/local/bin/aarch64-linux-gnu-ld
+          sudo ln -sf "$(which llvm-ar)"      /usr/local/bin/aarch64-linux-gnu-ar
+          sudo ln -sf "$(which llvm-nm)"      /usr/local/bin/aarch64-linux-gnu-nm
+          sudo ln -sf "$(which llvm-strip)"   /usr/local/bin/aarch64-linux-gnu-strip
+          sudo ln -sf "$(which llvm-objcopy)" /usr/local/bin/aarch64-linux-gnu-objcopy
+          sudo ln -sf "$(which llvm-objdump)" /usr/local/bin/aarch64-linux-gnu-objdump
+          sudo ln -sf "$(which llvm-readelf)" /usr/local/bin/aarch64-linux-gnu-readelf
 
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Setup SUSFS
+      - name: Clone SUSFS
         run: |
           git clone --depth=1 --branch gki-android12-5.10 \
             https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu
 
-      - name: Setup KernelSU — symlink (stable)
+      - name: Setup KernelSU
         run: |
-          git clone --branch "$KSU_TAG" https://github.com/tiann/KernelSU ../KernelSU
-          echo "KernelSU commit count: $(git -C ../KernelSU rev-list --count HEAD)"
-          cd ../KernelSU
+          if [ "${{ matrix.ksu }}" = "submodule" ]; then
+            git config --global --add safe.directory '*'
+            git submodule update --init KernelSU
+            [ -f KernelSU/.git/shallow ] && git -C KernelSU fetch --unshallow || true
+            echo "KernelSU commits: $(git -C KernelSU rev-list --count HEAD)"
+            KSU_DIR="KernelSU"
+            SYMLINK_TARGET="../KernelSU/kernel"
+          else
+            git clone --branch "$KSU_TAG" https://github.com/tiann/KernelSU ../KernelSU
+            echo "KernelSU commits: $(git -C ../KernelSU rev-list --count HEAD)"
+            KSU_DIR="../KernelSU"
+            SYMLINK_TARGET="../../KernelSU/kernel"
+          fi
 
+          cd "$KSU_DIR"
           patch -p1 --fuzz=3 \
             < "$GITHUB_WORKSPACE/../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
-            || echo "patch partial — applying fixes manually"
-
+            || true
           sed -i 's/^\s*depends on KPROBES && EXT4_FS//' kernel/Kconfig
-          sed -i 's/#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))/#if 1 \/* QC 5.10 backports 6.4+ SELinux AVC API *\//g' \
+          sed -i 's/#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))/#if 1/g' \
             kernel/selinux/rules.c
-          sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)/#if 1 \/* QC 5.10 backports 6.10+ hashtab const API *\//g' \
+          sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)/#if 1/g' \
             kernel/selinux/sepolicy.c
 
           cd "$GITHUB_WORKSPACE"
-          ln -sfn ../../KernelSU/kernel drivers/kernelsu
-          echo "Symlink: $(readlink drivers/kernelsu)"
+          ln -sfn "$SYMLINK_TARGET" drivers/kernelsu
+          echo "drivers/kernelsu -> $(readlink drivers/kernelsu)"
 
-      - name: Apply SUSFS kernel patches
+      - name: Apply SUSFS patches
         run: |
           cp ../susfs4ksu/kernel_patches/fs/susfs.c fs/susfs.c
           cp ../susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/susfs.h
@@ -82,8 +130,6 @@ jobs:
 
       - name: Build kernel
         run: |
-          export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-          which clang && clang --version || { echo "ERROR: clang missing from PATH=$PATH"; exit 1; }
           mkdir -p out
           cp defconfig out/.config
           make O=out ARCH=arm64 \
@@ -103,464 +149,37 @@ jobs:
             KCFLAGS="-march=armv8.2-a" \
             KBUILD_BUILD_USER=lhuna \
             KBUILD_BUILD_HOST=lhuna \
-            KBUILD_BUILD_TIMESTAMP="Thu Jan  1 00:00:00 UTC 2026" \
             -j$(nproc) 2>&1 | tee build.log \
             || {
               echo "===== BUILD FAILED ====="
-              grep -E " error:|undefined reference to|: error" build.log | tail -100
-              echo "--- Last 80 lines ---"
-              tail -80 build.log
+              grep -E " error:|undefined reference to|: error" build.log | tail -80
+              tail -60 build.log
               exit 1
             }
 
-      - name: Package with AnyKernel3
+      - name: Package kernel
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
           cp out/arch/arm64/boot/Image AnyKernel3/
           [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/ || true
           cp .github/anykernel.sh AnyKernel3/anykernel.sh
           DATE=$(date +%Y%m%d)
+          ZIPNAME="lhuna-pong-${DATE}-${{ matrix.variant }}.zip"
           cd AnyKernel3
-          zip -r9 "../lhuna-kernel-pong-${DATE}-stable-pacman.zip" . \
-            -x ".git/*" "README.md" "*placeholder"
+          zip -r9 "../${ZIPNAME}" . -x ".git/*" "README.md" "*placeholder"
           cd ..
-          ls -lh "lhuna-kernel-pong-${DATE}-stable-pacman.zip"
+          ls -lh "${ZIPNAME}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: lhuna-kernel-stable-pacman
-          path: lhuna-kernel-pong-*-stable-pacman.zip
+          name: lhuna-pong-${{ matrix.variant }}
+          path: "lhuna-pong-*-${{ matrix.variant }}.zip"
           if-no-files-found: error
 
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log-stable-pacman
-          path: build.log
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 2 · submodule · pacman clang
-# ─────────────────────────────────────────────────────────────────────────────
-  build-submodule-pacman:
-    name: "submodule · pacman clang"
-    runs-on: ubuntu-latest
-    container:
-      image: archlinux:base-devel
-      options: --privileged
-
-    steps:
-      - name: Init pacman & install deps
-        run: |
-          pacman-key --init
-          pacman-key --populate archlinux
-          pacman -Syu --noconfirm
-          pacman -S --noconfirm --needed \
-            git clang lld llvm \
-            bc dtc elfutils flex bison openssl \
-            zip wget curl python perl lzop lz4 pahole pigz
-          clang --version && ld.lld --version && llvm-ar --version | head -1
-          git config --global --add safe.directory '*'
-          ln -sf /usr/bin/clang        /usr/local/bin/aarch64-linux-gnu-gcc
-          ln -sf /usr/bin/clang++      /usr/local/bin/aarch64-linux-gnu-g++
-          ln -sf /usr/bin/ld.lld       /usr/local/bin/aarch64-linux-gnu-ld
-          ln -sf /usr/bin/llvm-ar      /usr/local/bin/aarch64-linux-gnu-ar
-          ln -sf /usr/bin/llvm-nm      /usr/local/bin/aarch64-linux-gnu-nm
-          ln -sf /usr/bin/llvm-strip   /usr/local/bin/aarch64-linux-gnu-strip
-          ln -sf /usr/bin/llvm-objcopy /usr/local/bin/aarch64-linux-gnu-objcopy
-          ln -sf /usr/bin/llvm-objdump /usr/local/bin/aarch64-linux-gnu-objdump
-          ln -sf /usr/bin/llvm-readelf /usr/local/bin/aarch64-linux-gnu-readelf
-
-      - name: Checkout kernel source
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-          submodules: false
-
-      - name: Init KernelSU submodule (full history for correct KSU_VERSION)
-        run: |
-          git submodule update --init KernelSU
-          [ -f KernelSU/.git/shallow ] && git -C KernelSU fetch --unshallow || true
-          echo "KernelSU commit count: $(git -C KernelSU rev-list --count HEAD)"
-
-      - name: Setup SUSFS
-        run: |
-          git clone --depth=1 --branch gki-android12-5.10 \
-            https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu
-
-      - name: Patch KernelSU & create drivers/kernelsu symlink
-        run: |
-          cd KernelSU
-          patch -p1 --fuzz=3 \
-            < "$GITHUB_WORKSPACE/../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
-            || echo "patch partial — applying fixes manually"
-          sed -i 's/^\s*depends on KPROBES && EXT4_FS//' kernel/Kconfig
-          sed -i 's/#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))/#if 1 \/* QC 5.10 backports 6.4+ SELinux AVC API *\//g' \
-            kernel/selinux/rules.c
-          sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)/#if 1 \/* QC 5.10 backports 6.10+ hashtab const API *\//g' \
-            kernel/selinux/sepolicy.c
-          cd "$GITHUB_WORKSPACE"
-          ln -sfn ../KernelSU/kernel drivers/kernelsu
-          echo "Symlink: $(readlink drivers/kernelsu)"
-
-      - name: Apply SUSFS kernel patches
-        run: |
-          cp ../susfs4ksu/kernel_patches/fs/susfs.c fs/susfs.c
-          cp ../susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/susfs.h
-          cp ../susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/susfs_def.h
-
-      - name: Build kernel
-        run: |
-          export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-          which clang && clang --version || { echo "ERROR: clang missing from PATH=$PATH"; exit 1; }
-          mkdir -p out
-          cp defconfig out/.config
-          make O=out ARCH=arm64 \
-            CC=clang LD=ld.lld \
-            HOSTCC=clang HOSTCXX=clang++ \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            LLVM=1 LLVM_IAS=1 \
-            olddefconfig
-
-          make O=out ARCH=arm64 \
-            CC=clang LD=ld.lld \
-            HOSTCC=clang HOSTCXX=clang++ \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            LLVM=1 LLVM_IAS=1 \
-            KCFLAGS="-march=armv8.2-a" \
-            KBUILD_BUILD_USER=lhuna \
-            KBUILD_BUILD_HOST=lhuna \
-            KBUILD_BUILD_TIMESTAMP="Thu Jan  1 00:00:00 UTC 2026" \
-            -j$(nproc) 2>&1 | tee build.log \
-            || {
-              echo "===== BUILD FAILED ====="
-              grep -E " error:|undefined reference to|: error" build.log | tail -100
-              echo "--- Last 80 lines ---"
-              tail -80 build.log
-              exit 1
-            }
-
-      - name: Package with AnyKernel3
-        run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
-          cp out/arch/arm64/boot/Image AnyKernel3/
-          [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/ || true
-          cp .github/anykernel.sh AnyKernel3/anykernel.sh
-          DATE=$(date +%Y%m%d)
-          cd AnyKernel3
-          zip -r9 "../lhuna-kernel-pong-${DATE}-submodule-pacman.zip" . \
-            -x ".git/*" "README.md" "*placeholder"
-          cd ..
-          ls -lh "lhuna-kernel-pong-${DATE}-submodule-pacman.zip"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: lhuna-kernel-submodule-pacman
-          path: lhuna-kernel-pong-*-submodule-pacman.zip
-          if-no-files-found: error
-
-      - name: Upload build log on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log-submodule-pacman
-          path: build.log
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 3 · stable · llvm-minimal-git via paru (AUR dev, no docs/OCaml/LLDB)
-# ─────────────────────────────────────────────────────────────────────────────
-  build-stable-aur:
-    name: "stable · paru llvm-minimal-git"
-    runs-on: ubuntu-latest
-    container:
-      image: archlinux:base-devel
-      options: --privileged
-
-    steps:
-      - name: Init pacman, install paru, build llvm-minimal-git
-        run: |
-          pacman-key --init
-          pacman-key --populate archlinux
-          pacman -Syu --noconfirm
-          # Base deps + rust (needed to build paru)
-          pacman -S --noconfirm --needed \
-            git rust \
-            bc dtc elfutils flex bison openssl \
-            zip wget curl python perl lzop lz4 pahole pigz
-          git config --global --add safe.directory '*'
-
-          # Create non-root builder user (makepkg refuses root)
-          useradd -m -G wheel builder
-          echo "builder ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
-
-          # Bootstrap paru from AUR
-          su builder -c "
-            git clone https://aur.archlinux.org/paru.git /tmp/paru-src
-            cd /tmp/paru-src
-            MAKEFLAGS=\"-j$(nproc)\" makepkg -si --noconfirm
-          "
-
-          # Install clang + lld + llvm (separate split packages from llvm-minimal-git PKGBUILD)
-          su builder -c "
-            MAKEFLAGS=\"-j$(nproc)\" NINJAFLAGS=\"-j$(nproc)\" \
-            paru -S --noconfirm --skipreview --noprogressbar \
-              clang-minimal-git lld-minimal-git llvm-minimal-git
-          "
-
-          clang --version && ld.lld --version && llvm-ar --version | head -1
-
-          ln -sf /usr/bin/clang        /usr/local/bin/aarch64-linux-gnu-gcc
-          ln -sf /usr/bin/clang++      /usr/local/bin/aarch64-linux-gnu-g++
-          ln -sf /usr/bin/ld.lld       /usr/local/bin/aarch64-linux-gnu-ld
-          ln -sf /usr/bin/llvm-ar      /usr/local/bin/aarch64-linux-gnu-ar
-          ln -sf /usr/bin/llvm-nm      /usr/local/bin/aarch64-linux-gnu-nm
-          ln -sf /usr/bin/llvm-strip   /usr/local/bin/aarch64-linux-gnu-strip
-          ln -sf /usr/bin/llvm-objcopy /usr/local/bin/aarch64-linux-gnu-objcopy
-          ln -sf /usr/bin/llvm-objdump /usr/local/bin/aarch64-linux-gnu-objdump
-          ln -sf /usr/bin/llvm-readelf /usr/local/bin/aarch64-linux-gnu-readelf
-
-      - name: Checkout kernel source
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Setup SUSFS
-        run: |
-          git clone --depth=1 --branch gki-android12-5.10 \
-            https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu
-
-      - name: Setup KernelSU — symlink (stable)
-        run: |
-          git clone --branch "$KSU_TAG" https://github.com/tiann/KernelSU ../KernelSU
-          echo "KernelSU commit count: $(git -C ../KernelSU rev-list --count HEAD)"
-          cd ../KernelSU
-          patch -p1 --fuzz=3 \
-            < "$GITHUB_WORKSPACE/../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
-            || echo "patch partial — applying fixes manually"
-          sed -i 's/^\s*depends on KPROBES && EXT4_FS//' kernel/Kconfig
-          sed -i 's/#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))/#if 1 \/* QC 5.10 backports 6.4+ SELinux AVC API *\//g' \
-            kernel/selinux/rules.c
-          sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)/#if 1 \/* QC 5.10 backports 6.10+ hashtab const API *\//g' \
-            kernel/selinux/sepolicy.c
-          cd "$GITHUB_WORKSPACE"
-          ln -sfn ../../KernelSU/kernel drivers/kernelsu
-          echo "Symlink: $(readlink drivers/kernelsu)"
-
-      - name: Apply SUSFS kernel patches
-        run: |
-          cp ../susfs4ksu/kernel_patches/fs/susfs.c fs/susfs.c
-          cp ../susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/susfs.h
-          cp ../susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/susfs_def.h
-
-      - name: Build kernel
-        run: |
-          export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-          which clang && clang --version || { echo "ERROR: clang missing from PATH=$PATH"; exit 1; }
-          mkdir -p out
-          cp defconfig out/.config
-          make O=out ARCH=arm64 \
-            CC=clang LD=ld.lld \
-            HOSTCC=clang HOSTCXX=clang++ \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            LLVM=1 LLVM_IAS=1 \
-            olddefconfig
-
-          make O=out ARCH=arm64 \
-            CC=clang LD=ld.lld \
-            HOSTCC=clang HOSTCXX=clang++ \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            LLVM=1 LLVM_IAS=1 \
-            KCFLAGS="-march=armv8.2-a" \
-            KBUILD_BUILD_USER=lhuna \
-            KBUILD_BUILD_HOST=lhuna \
-            KBUILD_BUILD_TIMESTAMP="Thu Jan  1 00:00:00 UTC 2026" \
-            -j$(nproc) 2>&1 | tee build.log \
-            || {
-              echo "===== BUILD FAILED ====="
-              grep -E " error:|undefined reference to|: error" build.log | tail -100
-              echo "--- Last 80 lines ---"
-              tail -80 build.log
-              exit 1
-            }
-
-      - name: Package with AnyKernel3
-        run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
-          cp out/arch/arm64/boot/Image AnyKernel3/
-          [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/ || true
-          cp .github/anykernel.sh AnyKernel3/anykernel.sh
-          DATE=$(date +%Y%m%d)
-          cd AnyKernel3
-          zip -r9 "../lhuna-kernel-pong-${DATE}-stable-aur.zip" . \
-            -x ".git/*" "README.md" "*placeholder"
-          cd ..
-          ls -lh "lhuna-kernel-pong-${DATE}-stable-aur.zip"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: lhuna-kernel-stable-aur
-          path: lhuna-kernel-pong-*-stable-aur.zip
-          if-no-files-found: error
-
-      - name: Upload build log on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log-stable-aur
-          path: build.log
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 4 · submodule · llvm-minimal-git via paru
-# ─────────────────────────────────────────────────────────────────────────────
-  build-submodule-aur:
-    name: "submodule · paru llvm-minimal-git"
-    runs-on: ubuntu-latest
-    container:
-      image: archlinux:base-devel
-      options: --privileged
-
-    steps:
-      - name: Init pacman, install paru, build llvm-minimal-git
-        run: |
-          pacman-key --init
-          pacman-key --populate archlinux
-          pacman -Syu --noconfirm
-          pacman -S --noconfirm --needed \
-            git rust \
-            bc dtc elfutils flex bison openssl \
-            zip wget curl python perl lzop lz4 pahole pigz
-          git config --global --add safe.directory '*'
-
-          useradd -m -G wheel builder
-          echo "builder ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
-
-          su builder -c "
-            git clone https://aur.archlinux.org/paru.git /tmp/paru-src
-            cd /tmp/paru-src
-            MAKEFLAGS=\"-j$(nproc)\" makepkg -si --noconfirm
-          "
-
-          su builder -c "
-            MAKEFLAGS=\"-j$(nproc)\" NINJAFLAGS=\"-j$(nproc)\" \
-            paru -S --noconfirm --skipreview --noprogressbar llvm-minimal-git
-          "
-
-          clang --version && ld.lld --version && llvm-ar --version | head -1
-
-          ln -sf /usr/bin/clang        /usr/local/bin/aarch64-linux-gnu-gcc
-          ln -sf /usr/bin/clang++      /usr/local/bin/aarch64-linux-gnu-g++
-          ln -sf /usr/bin/ld.lld       /usr/local/bin/aarch64-linux-gnu-ld
-          ln -sf /usr/bin/llvm-ar      /usr/local/bin/aarch64-linux-gnu-ar
-          ln -sf /usr/bin/llvm-nm      /usr/local/bin/aarch64-linux-gnu-nm
-          ln -sf /usr/bin/llvm-strip   /usr/local/bin/aarch64-linux-gnu-strip
-          ln -sf /usr/bin/llvm-objcopy /usr/local/bin/aarch64-linux-gnu-objcopy
-          ln -sf /usr/bin/llvm-objdump /usr/local/bin/aarch64-linux-gnu-objdump
-          ln -sf /usr/bin/llvm-readelf /usr/local/bin/aarch64-linux-gnu-readelf
-
-      - name: Checkout kernel source
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-          submodules: false
-
-      - name: Init KernelSU submodule (full history for correct KSU_VERSION)
-        run: |
-          git submodule update --init KernelSU
-          [ -f KernelSU/.git/shallow ] && git -C KernelSU fetch --unshallow || true
-          echo "KernelSU commit count: $(git -C KernelSU rev-list --count HEAD)"
-
-      - name: Setup SUSFS
-        run: |
-          git clone --depth=1 --branch gki-android12-5.10 \
-            https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu
-
-      - name: Patch KernelSU & create drivers/kernelsu symlink
-        run: |
-          cd KernelSU
-          patch -p1 --fuzz=3 \
-            < "$GITHUB_WORKSPACE/../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
-            || echo "patch partial — applying fixes manually"
-          sed -i 's/^\s*depends on KPROBES && EXT4_FS//' kernel/Kconfig
-          sed -i 's/#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))/#if 1 \/* QC 5.10 backports 6.4+ SELinux AVC API *\//g' \
-            kernel/selinux/rules.c
-          sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)/#if 1 \/* QC 5.10 backports 6.10+ hashtab const API *\//g' \
-            kernel/selinux/sepolicy.c
-          cd "$GITHUB_WORKSPACE"
-          ln -sfn ../KernelSU/kernel drivers/kernelsu
-          echo "Symlink: $(readlink drivers/kernelsu)"
-
-      - name: Apply SUSFS kernel patches
-        run: |
-          cp ../susfs4ksu/kernel_patches/fs/susfs.c fs/susfs.c
-          cp ../susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/susfs.h
-          cp ../susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/susfs_def.h
-
-      - name: Build kernel
-        run: |
-          export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-          which clang && clang --version || { echo "ERROR: clang missing from PATH=$PATH"; exit 1; }
-          mkdir -p out
-          cp defconfig out/.config
-          make O=out ARCH=arm64 \
-            CC=clang LD=ld.lld \
-            HOSTCC=clang HOSTCXX=clang++ \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            LLVM=1 LLVM_IAS=1 \
-            olddefconfig
-
-          make O=out ARCH=arm64 \
-            CC=clang LD=ld.lld \
-            HOSTCC=clang HOSTCXX=clang++ \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            LLVM=1 LLVM_IAS=1 \
-            KCFLAGS="-march=armv8.2-a" \
-            KBUILD_BUILD_USER=lhuna \
-            KBUILD_BUILD_HOST=lhuna \
-            KBUILD_BUILD_TIMESTAMP="Thu Jan  1 00:00:00 UTC 2026" \
-            -j$(nproc) 2>&1 | tee build.log \
-            || {
-              echo "===== BUILD FAILED ====="
-              grep -E " error:|undefined reference to|: error" build.log | tail -100
-              echo "--- Last 80 lines ---"
-              tail -80 build.log
-              exit 1
-            }
-
-      - name: Package with AnyKernel3
-        run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
-          cp out/arch/arm64/boot/Image AnyKernel3/
-          [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/ || true
-          cp .github/anykernel.sh AnyKernel3/anykernel.sh
-          DATE=$(date +%Y%m%d)
-          cd AnyKernel3
-          zip -r9 "../lhuna-kernel-pong-${DATE}-submodule-aur.zip" . \
-            -x ".git/*" "README.md" "*placeholder"
-          cd ..
-          ls -lh "lhuna-kernel-pong-${DATE}-submodule-aur.zip"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: lhuna-kernel-submodule-aur
-          path: lhuna-kernel-pong-*-submodule-aur.zip
-          if-no-files-found: error
-
-      - name: Upload build log on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log-submodule-aur
+          name: build-log-${{ matrix.variant }}
           path: build.log
