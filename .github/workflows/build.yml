@@ -8,6 +8,7 @@ on:
 
 env:
   KSU_TAG: "v3.2.4"
+  LLVM_VER: "22.1.4"
 
 jobs:
   build:
@@ -15,72 +16,68 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - variant: clang18-symlink
-            label: "clang-18 · symlink"
-            clang: "18"
+          - variant: pacman-symlink
+            label: "pacman · symlink"
+            toolchain: pacman
             ksu: symlink
-          - variant: clang18-submodule
-            label: "clang-18 · submodule"
-            clang: "18"
+          - variant: pacman-submodule
+            label: "pacman · submodule"
+            toolchain: pacman
             ksu: submodule
-          - variant: clang21-symlink
-            label: "clang-21 · symlink"
-            clang: "21"
+          - variant: llvm22-symlink
+            label: "llvm-22 · symlink"
+            toolchain: llvm22
             ksu: symlink
-          - variant: clang21-submodule
-            label: "clang-21 · submodule"
-            clang: "21"
+          - variant: llvm22-submodule
+            label: "llvm-22 · submodule"
+            toolchain: llvm22
             ksu: submodule
 
     name: ${{ matrix.label }}
     runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+      options: --privileged
 
     steps:
-      - name: Install build dependencies
+      - name: Setup toolchain
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y \
-            bc bison flex libelf-dev libssl-dev \
-            device-tree-compiler \
-            build-essential zip python3 perl \
-            lzop lz4 dwarves pigz
+          pacman-key --init
+          pacman-key --populate archlinux
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed \
+            git bc dtc elfutils flex bison openssl \
+            zip wget curl python perl lzop lz4 pahole pigz
+          git config --global --add safe.directory '*'
 
-          if [ "${{ matrix.clang }}" = "21" ]; then
-            wget -qO llvm.sh https://apt.llvm.org/llvm.sh
-            sudo bash llvm.sh 21
-            sudo apt-get install -y clang-21 lld-21 llvm-21
-            for t in clang clang++ ld.lld llvm-ar llvm-nm llvm-strip llvm-objcopy llvm-objdump llvm-readelf; do
-              b="${t%-*}-21" 2>/dev/null || true
-              case "$t" in
-                clang)        sudo update-alternatives --install /usr/bin/clang        clang        /usr/bin/clang-21        100 ;;
-                clang++)      sudo update-alternatives --install /usr/bin/clang++      clang++      /usr/bin/clang++-21      100 ;;
-                ld.lld)       sudo update-alternatives --install /usr/bin/ld.lld       ld.lld       /usr/bin/ld.lld-21       100 ;;
-                llvm-ar)      sudo update-alternatives --install /usr/bin/llvm-ar      llvm-ar      /usr/bin/llvm-ar-21      100 ;;
-                llvm-nm)      sudo update-alternatives --install /usr/bin/llvm-nm      llvm-nm      /usr/bin/llvm-nm-21      100 ;;
-                llvm-strip)   sudo update-alternatives --install /usr/bin/llvm-strip   llvm-strip   /usr/bin/llvm-strip-21   100 ;;
-                llvm-objcopy) sudo update-alternatives --install /usr/bin/llvm-objcopy llvm-objcopy /usr/bin/llvm-objcopy-21 100 ;;
-                llvm-objdump) sudo update-alternatives --install /usr/bin/llvm-objdump llvm-objdump /usr/bin/llvm-objdump-21 100 ;;
-                llvm-readelf) sudo update-alternatives --install /usr/bin/llvm-readelf llvm-readelf /usr/bin/llvm-readelf-21 100 ;;
-              esac
+          if [ "${{ matrix.toolchain }}" = "llvm22" ]; then
+            echo "-- Downloading LLVM ${LLVM_VER} prebuilt..."
+            wget -q "https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VER}/LLVM-${LLVM_VER}-Linux-X64.tar.xz"
+            mkdir -p /opt/llvm
+            tar -xf "LLVM-${LLVM_VER}-Linux-X64.tar.xz" -C /opt/llvm --strip-components=1
+            rm "LLVM-${LLVM_VER}-Linux-X64.tar.xz"
+            echo "/opt/llvm/lib" > /etc/ld.so.conf.d/llvm.conf
+            ldconfig
+            for bin in clang clang++ lld ld.lld llvm-ar llvm-nm llvm-strip \
+                       llvm-objcopy llvm-objdump llvm-readelf; do
+              [ -f "/opt/llvm/bin/$bin" ] && ln -sf "/opt/llvm/bin/$bin" "/usr/local/bin/$bin"
             done
           else
-            sudo apt-get install -y clang lld llvm
+            pacman -S --noconfirm --needed clang lld llvm
           fi
 
-          clang --version
-          ld.lld --version
+          clang --version && ld.lld --version
 
-          # Wrappers so the kernel build system finds aarch64-linux-gnu-* via clang
-          for tool in gcc g++; do
-            sudo ln -sf "$(which clang)" /usr/local/bin/aarch64-linux-gnu-${tool}
+          for t in gcc g++; do
+            ln -sf "$(which clang)" "/usr/local/bin/aarch64-linux-gnu-$t"
           done
-          sudo ln -sf "$(which ld.lld)"       /usr/local/bin/aarch64-linux-gnu-ld
-          sudo ln -sf "$(which llvm-ar)"      /usr/local/bin/aarch64-linux-gnu-ar
-          sudo ln -sf "$(which llvm-nm)"      /usr/local/bin/aarch64-linux-gnu-nm
-          sudo ln -sf "$(which llvm-strip)"   /usr/local/bin/aarch64-linux-gnu-strip
-          sudo ln -sf "$(which llvm-objcopy)" /usr/local/bin/aarch64-linux-gnu-objcopy
-          sudo ln -sf "$(which llvm-objdump)" /usr/local/bin/aarch64-linux-gnu-objdump
-          sudo ln -sf "$(which llvm-readelf)" /usr/local/bin/aarch64-linux-gnu-readelf
+          ln -sf "$(which ld.lld)"       /usr/local/bin/aarch64-linux-gnu-ld
+          ln -sf "$(which llvm-ar)"      /usr/local/bin/aarch64-linux-gnu-ar
+          ln -sf "$(which llvm-nm)"      /usr/local/bin/aarch64-linux-gnu-nm
+          ln -sf "$(which llvm-strip)"   /usr/local/bin/aarch64-linux-gnu-strip
+          ln -sf "$(which llvm-objcopy)" /usr/local/bin/aarch64-linux-gnu-objcopy
+          ln -sf "$(which llvm-objdump)" /usr/local/bin/aarch64-linux-gnu-objdump
+          ln -sf "$(which llvm-readelf)" /usr/local/bin/aarch64-linux-gnu-readelf
 
       - name: Checkout kernel source
         uses: actions/checkout@v4
@@ -95,7 +92,6 @@ jobs:
       - name: Setup KernelSU
         run: |
           if [ "${{ matrix.ksu }}" = "submodule" ]; then
-            git config --global --add safe.directory '*'
             git submodule update --init KernelSU
             [ -f KernelSU/.git/shallow ] && git -C KernelSU fetch --unshallow || true
             echo "KernelSU commits: $(git -C KernelSU rev-list --count HEAD)"
@@ -130,6 +126,8 @@ jobs:
 
       - name: Build kernel
         run: |
+          export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          which clang && clang --version || { echo "ERROR: clang not in PATH"; exit 1; }
           mkdir -p out
           cp defconfig out/.config
           make O=out ARCH=arm64 \
