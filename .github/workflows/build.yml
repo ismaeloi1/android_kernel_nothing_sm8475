@@ -50,9 +50,10 @@ jobs:
           git config --global --add safe.directory '*'
 
           if [ "${{ matrix.toolchain }}" = "llvm-git" ]; then
-            # Build clang+lld from llvm-project git HEAD, no AUR packaging needed
+            # Build clang+lld from source at stable tag — compiled Release, no AUR
             pacman -S --noconfirm --needed cmake ninja
-            git clone --depth=1 https://github.com/llvm/llvm-project.git /tmp/llvm-src
+            git clone --depth=1 --branch llvmorg-22.1.4 \
+              https://github.com/llvm/llvm-project.git /tmp/llvm-src
             cmake -G Ninja \
               -S /tmp/llvm-src/llvm \
               -B /tmp/llvm-build \
