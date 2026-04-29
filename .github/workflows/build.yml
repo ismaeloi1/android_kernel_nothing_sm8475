@@ -50,39 +50,69 @@ jobs:
           git config --global --add safe.directory '*'
 
           if [ "${{ matrix.toolchain }}" = "llvm-git" ]; then
-            # Build clang+lld from source at stable tag — compiled Release, no AUR
-            pacman -S --noconfirm --needed cmake ninja
+            # cmake + ninja; install pacman lld now so LLVM links itself with lld (~2x faster)
+            pacman -S --noconfirm --needed cmake ninja lld
+
             git clone --depth=1 --branch llvmorg-22.1.4 \
               https://github.com/llvm/llvm-project.git /tmp/llvm-src
+
+            # Flags follow ClangBuiltLinux/tc-build kernel profile:
+            # - LLVM_DISTRIBUTION_COMPONENTS + install-distribution replaces INSTALL_TOOLCHAIN_ONLY;
+            #   guarantees clang-resource-headers (built-in stddef.h/limits.h/…) are installed —
+            #   without these every C translation unit fails at the preprocessor stage.
+            # - llvm-readelf listed explicitly (INSTALL_TOOLCHAIN_ONLY historically skipped it).
+            # - LLVM_PARALLEL_LINK_JOBS=2 caps concurrent link processes; each LLVM link can
+            #   consume 3–5 GB and GitHub runners have ~7 GB total — uncapped links OOM silently.
+            # - LLVM_USE_LINKER=lld uses pacman lld to link LLVM itself; faster + lower peak RSS.
+            # - Slim flags (ARCMT/plugin/analyzer/bindings/ocaml/terminfo/dylib/warnings) trim
+            #   subsystems not needed for kernel cross-compilation, reducing build time.
             cmake -G Ninja \
               -S /tmp/llvm-src/llvm \
               -B /tmp/llvm-build \
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_INSTALL_PREFIX=/opt/llvm \
+              -DLLVM_USE_LINKER=lld \
               -DLLVM_ENABLE_PROJECTS="clang;lld" \
-              -DLLVM_TARGETS_TO_BUILD="X86;AArch64" \
+              -DLLVM_TARGETS_TO_BUILD="AArch64;X86" \
+              "-DLLVM_DISTRIBUTION_COMPONENTS=clang;clang-resource-headers;lld;llvm-ar;llvm-nm;llvm-objcopy;llvm-objdump;llvm-ranlib;llvm-readelf;llvm-strip" \
+              -DLLVM_PARALLEL_LINK_JOBS=2 \
               -DLLVM_ENABLE_ASSERTIONS=OFF \
               -DLLVM_INCLUDE_TESTS=OFF \
               -DLLVM_INCLUDE_BENCHMARKS=OFF \
-              -DLLVM_INCLUDE_EXAMPLES=OFF \
-              -DLLVM_INCLUDE_DOCS=OFF \
               -DLLVM_BUILD_TESTS=OFF \
               -DCLANG_INCLUDE_TESTS=OFF \
               -DLLVM_ENABLE_ZLIB=OFF \
               -DLLVM_ENABLE_ZSTD=OFF \
               -DLLVM_ENABLE_LIBXML2=OFF \
-              -DLLVM_INSTALL_TOOLCHAIN_ONLY=ON
-            ninja -C /tmp/llvm-build -j$(nproc) install
+              -DCLANG_ENABLE_STATIC_ANALYZER=OFF \
+              -DCLANG_PLUGIN_SUPPORT=OFF \
+              -DCLANG_ENABLE_ARCMT=OFF \
+              -DLLVM_ENABLE_BINDINGS=OFF \
+              -DLLVM_ENABLE_OCAMLDOC=OFF \
+              -DLLVM_INCLUDE_DOCS=OFF \
+              -DLLVM_INCLUDE_EXAMPLES=OFF \
+              -DLLVM_LINK_LLVM_DYLIB=OFF \
+              -DLLVM_ENABLE_TERMINFO=OFF \
+              -DLLVM_ENABLE_WARNINGS=OFF
+
+            ninja -C /tmp/llvm-build -j$(nproc) install-distribution
             rm -rf /tmp/llvm-src /tmp/llvm-build
+
             echo "/opt/llvm/lib" > /etc/ld.so.conf.d/llvm.conf
             ldconfig
+
             for bin in clang clang++ lld ld.lld llvm-ar llvm-nm llvm-strip \
-                       llvm-objcopy llvm-objdump llvm-readobj llvm-readelf; do
-              [ -f "/opt/llvm/bin/$bin" ] && ln -sf "/opt/llvm/bin/$bin" "/usr/local/bin/$bin"
+                       llvm-objcopy llvm-objdump llvm-ranlib llvm-readelf llvm-readobj; do
+              if [ -f "/opt/llvm/bin/$bin" ] || [ -L "/opt/llvm/bin/$bin" ]; then
+                ln -sf "/opt/llvm/bin/$bin" "/usr/local/bin/$bin"
+              else
+                echo "WARN: /opt/llvm/bin/$bin not found after install-distribution"
+              fi
             done
-            # toolchain-only install has readobj but not readelf; alias it
-            [ ! -f /usr/local/bin/llvm-readelf ] && \
-              ln -sf /usr/local/bin/llvm-readobj /usr/local/bin/llvm-readelf
+
+            echo "=== installed LLVM binaries ==="
+            ls /opt/llvm/bin/
+            ls /opt/llvm/lib/clang/ 2>/dev/null || echo "WARN: clang resource headers missing"
           else
             pacman -S --noconfirm --needed clang lld llvm
           fi
@@ -98,8 +128,7 @@ jobs:
           ln -sf "$(which llvm-strip)"   /usr/local/bin/aarch64-linux-gnu-strip
           ln -sf "$(which llvm-objcopy)" /usr/local/bin/aarch64-linux-gnu-objcopy
           ln -sf "$(which llvm-objdump)" /usr/local/bin/aarch64-linux-gnu-objdump
-          READELF=$(command -v llvm-readelf 2>/dev/null || command -v llvm-readobj 2>/dev/null)
-          [ -n "$READELF" ] && ln -sf "$READELF" /usr/local/bin/aarch64-linux-gnu-readelf
+          ln -sf "$(which llvm-readelf)" /usr/local/bin/aarch64-linux-gnu-readelf
 
       - name: Checkout kernel source
         uses: actions/checkout@v4
