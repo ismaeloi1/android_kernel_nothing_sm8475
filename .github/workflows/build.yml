@@ -306,10 +306,11 @@ jobs:
             MAKEFLAGS=\"-j$(nproc)\" makepkg -si --noconfirm
           "
 
-          # Install llvm-minimal-git (clang+lld+llvm core only, no docs/OCaml/LLDB)
+          # Install clang + lld + llvm (separate split packages from llvm-minimal-git PKGBUILD)
           su builder -c "
             MAKEFLAGS=\"-j$(nproc)\" NINJAFLAGS=\"-j$(nproc)\" \
-            paru -S --noconfirm --skipreview --noprogressbar llvm-minimal-git
+            paru -S --noconfirm --skipreview --noprogressbar \
+              clang-minimal-git lld-minimal-git llvm-minimal-git
           "
 
           clang --version && ld.lld --version && llvm-ar --version | head -1
