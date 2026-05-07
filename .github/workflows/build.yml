@@ -58,7 +58,11 @@ jobs:
               clang lld llvm
           else
             DEBIAN_FRONTEND=noninteractive apt-get update -qq
+            # ca-certificates first: actions/checkout (step 2) does git over https
+            # in this same container, and --no-install-recommends omits it otherwise,
+            # so cert verification fails before any of our build steps run.
             DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              ca-certificates \
               git bc device-tree-compiler libelf-dev flex bison libssl-dev \
               zip wget curl python3 perl lzop lz4 dwarves pigz \
               clang lld llvm binutils make
@@ -133,6 +137,13 @@ jobs:
           sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)/#if 1/g' \
             kernel/selinux/sepolicy.c
 
+          # Modernise the composite-object syntax: kernelsu-objs is the legacy
+          # name and is supposed to be an alias for kernelsu-y, but with
+          # CONFIG_LTO_CLANG_THIN + thin archives the legacy form occasionally
+          # produces a kernelsu.o that is empty of bitcode, so the resulting
+          # vmlinux link can't resolve ksu_handle_devpts.
+          sed -i 's/^kernelsu-objs\b/kernelsu-y/' kernel/Kbuild
+
           cd "$GITHUB_WORKSPACE"
           ln -sfn "$SYMLINK_TARGET" drivers/kernelsu
           echo "drivers/kernelsu -> $(readlink drivers/kernelsu)"
@@ -158,6 +169,24 @@ jobs:
             LLVM=1 LLVM_IAS=1 \
             olddefconfig
 
+          # olddefconfig occasionally drops CONFIG_KSU when a Kconfig dependency
+          # (KPROBES/EXT4_FS) doesn't satisfy in this tree; force-pin it along
+          # with the SUSFS chain so fs/devpts/inode.c's ksu_handle_devpts call
+          # has a definition to link against.
+          ./scripts/config --file out/.config -e KSU -e KSU_SUSFS \
+            -e KSU_SUSFS_SUS_PATH -e KSU_SUSFS_SUS_MOUNT \
+            -e KSU_SUSFS_SUS_KSTAT -e KSU_SUSFS_TRY_UMOUNT \
+            -e KSU_SUSFS_SPOOF_UNAME -e KSU_SUSFS_OPEN_REDIRECT
+          make O=out ARCH=arm64 \
+            CC=clang LD=ld.lld \
+            HOSTCC=clang HOSTCXX=clang++ \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            LLVM=1 LLVM_IAS=1 \
+            olddefconfig
+          echo "===== Final KSU config ====="
+          grep -E '^(CONFIG_KSU|# CONFIG_KSU)' out/.config | head -20
+
           make O=out ARCH=arm64 \
             CC=clang LD=ld.lld \
             HOSTCC=clang HOSTCXX=clang++ \
@@ -171,8 +200,17 @@ jobs:
 
           [ -f out/arch/arm64/boot/Image ] || {
             echo "===== BUILD FAILED — no Image produced ====="
-            grep -E " error:|undefined reference to" build.log | tail -50
+            grep -E " error:|undefined reference to|undefined symbol" build.log | tail -50
             tail -40 build.log
+            echo "===== drivers/kernelsu/built-in.a contents ====="
+            "$(which llvm-ar)" t out/drivers/kernelsu/built-in.a 2>/dev/null || \
+              ls out/drivers/kernelsu/ 2>/dev/null
+            echo "===== ksu_handle_devpts symbol search ====="
+            for o in out/drivers/kernelsu/feature/sucompat.o \
+                     out/drivers/kernelsu/kernelsu.o; do
+              [ -f "$o" ] && echo "-- $o --" && \
+                "$(which llvm-nm)" "$o" 2>/dev/null | grep -i ksu_handle_devpts || true
+            done
             exit 1
           }
 
