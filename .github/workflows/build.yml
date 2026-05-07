@@ -19,116 +19,84 @@ jobs:
             label: "pacman · symlink"
             toolchain: pacman
             ksu: symlink
+            image: archlinux:base-devel
+
           - variant: pacman-submodule
             label: "pacman · submodule"
             toolchain: pacman
             ksu: submodule
-          - variant: llvmgit-symlink
-            label: "llvm-git · symlink"
-            toolchain: llvm-git
+            image: archlinux:base-devel
+
+          - variant: ubuntu-symlink
+            label: "ubuntu · symlink"
+            toolchain: ubuntu
             ksu: symlink
-          - variant: llvmgit-submodule
-            label: "llvm-git · submodule"
-            toolchain: llvm-git
+            image: ubuntu:24.04
+
+          - variant: ubuntu-submodule
+            label: "ubuntu · submodule"
+            toolchain: ubuntu
             ksu: submodule
+            image: ubuntu:24.04
 
     name: ${{ matrix.label }}
     runs-on: ubuntu-latest
     container:
-      image: archlinux:base-devel
+      image: ${{ matrix.image }}
       options: --privileged
 
     steps:
       - name: Setup toolchain
         run: |
-          pacman-key --init
-          pacman-key --populate archlinux
-          pacman -Syu --noconfirm
-          pacman -S --noconfirm --needed \
-            git bc dtc elfutils flex bison openssl \
-            zip wget curl python perl lzop lz4 pahole pigz
-          git config --global --add safe.directory '*'
-
-          if [ "${{ matrix.toolchain }}" = "llvm-git" ]; then
-            # cmake + ninja; install pacman lld now so LLVM links itself with lld (~2x faster)
-            pacman -S --noconfirm --needed cmake ninja lld
-
-            git clone --depth=1 --branch llvmorg-22.1.4 \
-              https://github.com/llvm/llvm-project.git /tmp/llvm-src
-
-            # Flags follow ClangBuiltLinux/tc-build kernel profile:
-            # - LLVM_DISTRIBUTION_COMPONENTS + install-distribution replaces INSTALL_TOOLCHAIN_ONLY;
-            #   guarantees clang-resource-headers (built-in stddef.h/limits.h/…) are installed —
-            #   without these every C translation unit fails at the preprocessor stage.
-            # - llvm-readelf listed explicitly (INSTALL_TOOLCHAIN_ONLY historically skipped it).
-            # - LLVM_PARALLEL_LINK_JOBS=2 caps concurrent link processes; each LLVM link can
-            #   consume 3–5 GB and GitHub runners have ~7 GB total — uncapped links OOM silently.
-            # - LLVM_USE_LINKER=lld uses pacman lld to link LLVM itself; faster + lower peak RSS.
-            # - Slim flags (ARCMT/plugin/analyzer/bindings/ocaml/terminfo/dylib/warnings) trim
-            #   subsystems not needed for kernel cross-compilation, reducing build time.
-            cmake -G Ninja \
-              -S /tmp/llvm-src/llvm \
-              -B /tmp/llvm-build \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_INSTALL_PREFIX=/opt/llvm \
-              -DLLVM_USE_LINKER=lld \
-              -DLLVM_ENABLE_PROJECTS="clang;lld" \
-              -DLLVM_TARGETS_TO_BUILD="AArch64;X86" \
-              "-DLLVM_DISTRIBUTION_COMPONENTS=clang;clang-resource-headers;lld;llvm-ar;llvm-nm;llvm-objcopy;llvm-objdump;llvm-ranlib;llvm-readelf;llvm-strip" \
-              -DLLVM_PARALLEL_LINK_JOBS=2 \
-              -DLLVM_ENABLE_ASSERTIONS=OFF \
-              -DLLVM_INCLUDE_TESTS=OFF \
-              -DLLVM_INCLUDE_BENCHMARKS=OFF \
-              -DLLVM_BUILD_TESTS=OFF \
-              -DCLANG_INCLUDE_TESTS=OFF \
-              -DLLVM_ENABLE_ZLIB=OFF \
-              -DLLVM_ENABLE_ZSTD=OFF \
-              -DLLVM_ENABLE_LIBXML2=OFF \
-              -DCLANG_ENABLE_STATIC_ANALYZER=OFF \
-              -DCLANG_PLUGIN_SUPPORT=OFF \
-              -DCLANG_ENABLE_ARCMT=OFF \
-              -DLLVM_ENABLE_BINDINGS=OFF \
-              -DLLVM_ENABLE_OCAMLDOC=OFF \
-              -DLLVM_INCLUDE_DOCS=OFF \
-              -DLLVM_INCLUDE_EXAMPLES=OFF \
-              -DLLVM_LINK_LLVM_DYLIB=OFF \
-              -DLLVM_ENABLE_TERMINFO=OFF \
-              -DLLVM_ENABLE_WARNINGS=OFF
-
-            ninja -C /tmp/llvm-build -j$(nproc) install-distribution
-            rm -rf /tmp/llvm-src /tmp/llvm-build
-
-            echo "/opt/llvm/lib" > /etc/ld.so.conf.d/llvm.conf
-            ldconfig
-
-            for bin in clang clang++ lld ld.lld llvm-ar llvm-nm llvm-strip \
-                       llvm-objcopy llvm-objdump llvm-ranlib llvm-readelf llvm-readobj; do
-              if [ -f "/opt/llvm/bin/$bin" ] || [ -L "/opt/llvm/bin/$bin" ]; then
-                ln -sf "/opt/llvm/bin/$bin" "/usr/local/bin/$bin"
-              else
-                echo "WARN: /opt/llvm/bin/$bin not found after install-distribution"
-              fi
-            done
-
-            echo "=== installed LLVM binaries ==="
-            ls /opt/llvm/bin/
-            ls /opt/llvm/lib/clang/ 2>/dev/null || echo "WARN: clang resource headers missing"
+          if [ "${{ matrix.toolchain }}" = "pacman" ]; then
+            pacman-key --init
+            pacman-key --populate archlinux
+            pacman -Syu --noconfirm
+            pacman -S --noconfirm --needed \
+              git bc dtc elfutils flex bison openssl \
+              zip wget curl python perl lzop lz4 pahole pigz \
+              clang lld llvm
           else
-            pacman -S --noconfirm --needed clang lld llvm
+            DEBIAN_FRONTEND=noninteractive apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              git bc device-tree-compiler libelf-dev flex bison libssl-dev \
+              zip wget curl python3 perl lzop lz4 dwarves pigz \
+              clang lld llvm binutils make
+            # Ubuntu ships versioned LLVM binaries (e.g. clang-18, llvm-ar-18).
+            # update-alternatives usually wires up unversioned names, but verify
+            # and create /usr/local/bin symlinks for any that are missing.
+            for t in clang clang++ lld llvm-ar llvm-nm llvm-strip \
+                     llvm-objcopy llvm-objdump llvm-readelf llvm-ranlib; do
+              command -v "$t" >/dev/null 2>&1 && continue
+              alt=$(ls /usr/bin/${t}-[0-9]* /usr/lib/llvm-*/bin/"$t" 2>/dev/null \
+                    | sort -Vr | head -1 || true)
+              [ -n "$alt" ] && ln -sf "$alt" "/usr/local/bin/$t" \
+                || echo "WARN: $t not found after apt install"
+            done
+            # ld.lld lives outside the normal alternatives chain on some Ubuntu releases
+            command -v ld.lld >/dev/null 2>&1 || {
+              alt=$(ls /usr/bin/ld.lld-[0-9]* /usr/lib/llvm-*/bin/ld.lld 2>/dev/null \
+                    | sort -Vr | head -1 || true)
+              [ -n "$alt" ] && ln -sf "$alt" /usr/local/bin/ld.lld \
+                || echo "WARN: ld.lld not found"
+            }
           fi
 
+          git config --global --add safe.directory '*'
           clang --version && ld.lld --version
 
+          # Cross-compiler wrappers — kernel Makefile resolves CROSS_COMPILE=aarch64-linux-gnu-
+          # to these names; point them all at the LLVM equivalents already in PATH.
           for t in gcc g++; do
-            ln -sf "$(which clang)" "/usr/local/bin/aarch64-linux-gnu-$t"
+            ln -sf "$(which clang)"        "/usr/local/bin/aarch64-linux-gnu-$t"
           done
-          ln -sf "$(which ld.lld)"       /usr/local/bin/aarch64-linux-gnu-ld
-          ln -sf "$(which llvm-ar)"      /usr/local/bin/aarch64-linux-gnu-ar
-          ln -sf "$(which llvm-nm)"      /usr/local/bin/aarch64-linux-gnu-nm
-          ln -sf "$(which llvm-strip)"   /usr/local/bin/aarch64-linux-gnu-strip
-          ln -sf "$(which llvm-objcopy)" /usr/local/bin/aarch64-linux-gnu-objcopy
-          ln -sf "$(which llvm-objdump)" /usr/local/bin/aarch64-linux-gnu-objdump
-          ln -sf "$(which llvm-readelf)" /usr/local/bin/aarch64-linux-gnu-readelf
+          ln -sf "$(which ld.lld)"         /usr/local/bin/aarch64-linux-gnu-ld
+          ln -sf "$(which llvm-ar)"        /usr/local/bin/aarch64-linux-gnu-ar
+          ln -sf "$(which llvm-nm)"        /usr/local/bin/aarch64-linux-gnu-nm
+          ln -sf "$(which llvm-strip)"     /usr/local/bin/aarch64-linux-gnu-strip
+          ln -sf "$(which llvm-objcopy)"   /usr/local/bin/aarch64-linux-gnu-objcopy
+          ln -sf "$(which llvm-objdump)"   /usr/local/bin/aarch64-linux-gnu-objdump
+          ln -sf "$(which llvm-readelf)"   /usr/local/bin/aarch64-linux-gnu-readelf
 
       - name: Checkout kernel source
         uses: actions/checkout@v4
